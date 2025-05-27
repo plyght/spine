@@ -7,6 +7,7 @@ use tokio::process::Command;
 #[derive(Debug, Clone)]
 pub struct ExecutionResult {
     pub success: bool,
+    pub stdout: String,
     pub stderr: String,
 }
 
@@ -15,7 +16,7 @@ pub async fn execute_manager_workflow(manager: &mut DetectedManager) -> Result<(
 
     // Refresh repositories
     if let Some(refresh_cmd) = &config.refresh {
-        manager.status = ManagerStatus::Refreshing;
+        manager.status = ManagerStatus::Running("Refreshing".to_string(), String::new());
         match execute_command_with_timeout(
             refresh_cmd,
             config.requires_sudo,
@@ -23,10 +24,15 @@ pub async fn execute_manager_workflow(manager: &mut DetectedManager) -> Result<(
         )
         .await
         {
-            Ok(result) if result.success => {}
+            Ok(result) if result.success => {
+                let logs = format!("Refresh completed:\n{}\n{}", result.stdout, result.stderr);
+                manager.status = ManagerStatus::Running("Refreshing".to_string(), logs);
+            }
             Ok(result) => {
-                manager.status =
-                    ManagerStatus::Failed(format!("Refresh failed: {}", result.stderr));
+                manager.status = ManagerStatus::Failed(format!(
+                    "Refresh failed: {}\nStdout: {}\nStderr: {}",
+                    "Command failed", result.stdout, result.stderr
+                ));
                 return Ok(());
             }
             Err(e) => {
@@ -38,7 +44,7 @@ pub async fn execute_manager_workflow(manager: &mut DetectedManager) -> Result<(
 
     // Self-update
     if let Some(self_update_cmd) = &config.self_update {
-        manager.status = ManagerStatus::SelfUpdating;
+        manager.status = ManagerStatus::Running("Self-updating".to_string(), String::new());
         match execute_command_with_timeout(
             self_update_cmd,
             config.requires_sudo,
@@ -46,10 +52,18 @@ pub async fn execute_manager_workflow(manager: &mut DetectedManager) -> Result<(
         )
         .await
         {
-            Ok(result) if result.success => {}
+            Ok(result) if result.success => {
+                let logs = format!(
+                    "Self-update completed:\n{}\n{}",
+                    result.stdout, result.stderr
+                );
+                manager.status = ManagerStatus::Running("Self-updating".to_string(), logs);
+            }
             Ok(result) => {
-                manager.status =
-                    ManagerStatus::Failed(format!("Self-update failed: {}", result.stderr));
+                manager.status = ManagerStatus::Failed(format!(
+                    "Self-update failed: {}\nStdout: {}\nStderr: {}",
+                    "Command failed", result.stdout, result.stderr
+                ));
                 return Ok(());
             }
             Err(e) => {
@@ -60,7 +74,7 @@ pub async fn execute_manager_workflow(manager: &mut DetectedManager) -> Result<(
     }
 
     // Upgrade all packages
-    manager.status = ManagerStatus::Upgrading;
+    manager.status = ManagerStatus::Running("Upgrading".to_string(), String::new());
     match execute_command_with_timeout(
         &config.upgrade_all,
         config.requires_sudo,
@@ -68,9 +82,15 @@ pub async fn execute_manager_workflow(manager: &mut DetectedManager) -> Result<(
     )
     .await
     {
-        Ok(result) if result.success => {}
+        Ok(result) if result.success => {
+            let logs = format!("Upgrade completed:\n{}\n{}", result.stdout, result.stderr);
+            manager.status = ManagerStatus::Running("Upgrading".to_string(), logs);
+        }
         Ok(result) => {
-            manager.status = ManagerStatus::Failed(format!("Upgrade failed: {}", result.stderr));
+            manager.status = ManagerStatus::Failed(format!(
+                "Upgrade failed: {}\nStdout: {}\nStderr: {}",
+                "Command failed", result.stdout, result.stderr
+            ));
             return Ok(());
         }
         Err(e) => {
@@ -81,7 +101,7 @@ pub async fn execute_manager_workflow(manager: &mut DetectedManager) -> Result<(
 
     // Cleanup
     if let Some(cleanup_cmd) = &config.cleanup {
-        manager.status = ManagerStatus::Cleaning;
+        manager.status = ManagerStatus::Running("Cleaning".to_string(), String::new());
         match execute_command_with_timeout(
             cleanup_cmd,
             config.requires_sudo,
@@ -89,10 +109,15 @@ pub async fn execute_manager_workflow(manager: &mut DetectedManager) -> Result<(
         )
         .await
         {
-            Ok(result) if result.success => {}
+            Ok(result) if result.success => {
+                let logs = format!("Cleanup completed:\n{}\n{}", result.stdout, result.stderr);
+                manager.status = ManagerStatus::Running("Cleaning".to_string(), logs);
+            }
             Ok(result) => {
-                manager.status =
-                    ManagerStatus::Failed(format!("Cleanup failed: {}", result.stderr));
+                manager.status = ManagerStatus::Failed(format!(
+                    "Cleanup failed: {}\nStdout: {}\nStderr: {}",
+                    "Command failed", result.stdout, result.stderr
+                ));
                 return Ok(());
             }
             Err(e) => {
@@ -117,6 +142,7 @@ async fn execute_command_with_timeout(
 
     Ok(ExecutionResult {
         success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
 }

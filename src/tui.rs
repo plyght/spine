@@ -24,7 +24,11 @@ enum AppState {
     DetailView(usize),
 }
 
-pub async fn run_tui(mut managers: Vec<DetectedManager>, _config: Config, selective: bool) -> Result<()> {
+pub async fn run_tui(
+    mut managers: Vec<DetectedManager>,
+    _config: Config,
+    selective: bool,
+) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -38,7 +42,7 @@ pub async fn run_tui(mut managers: Vec<DetectedManager>, _config: Config, select
 
     // Track which managers have started their workflows
     let mut started_workflows: Vec<bool> = vec![false; managers.len()];
-    
+
     // Start all manager workflows in parallel (only if not in selective mode)
     let mut join_set = JoinSet::new();
     if !selective {
@@ -177,7 +181,12 @@ fn ui(
     }
 }
 
-fn render_manager_list(f: &mut Frame, managers: &[DetectedManager], list_state: &mut ListState, selective: bool) {
+fn render_manager_list(
+    f: &mut Frame,
+    managers: &[DetectedManager],
+    list_state: &mut ListState,
+    selective: bool,
+) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
@@ -194,13 +203,10 @@ fn render_manager_list(f: &mut Frame, managers: &[DetectedManager], list_state: 
             };
 
             let status_text = match &manager.status {
-                ManagerStatus::Pending => "Pending",
-                ManagerStatus::Refreshing => "Refreshing...",
-                ManagerStatus::SelfUpdating => "Self-updating...",
-                ManagerStatus::Upgrading => "Upgrading...",
-                ManagerStatus::Cleaning => "Cleaning...",
-                ManagerStatus::Success => "✓ Complete",
-                ManagerStatus::Failed(_err) => "✗ Failed",
+                ManagerStatus::Pending => "Pending".to_string(),
+                ManagerStatus::Running(operation, _) => format!("{}...", operation),
+                ManagerStatus::Success => "✓ Complete".to_string(),
+                ManagerStatus::Failed(_err) => "✗ Failed".to_string(),
             };
 
             ListItem::new(Line::from(vec![
@@ -280,10 +286,13 @@ fn render_detail_view(f: &mut Frame, manager: &DetectedManager) {
 
     let status_text = match &manager.status {
         ManagerStatus::Pending => "Status: Pending".to_string(),
-        ManagerStatus::Refreshing => "Status: Refreshing repositories...".to_string(),
-        ManagerStatus::SelfUpdating => "Status: Self-updating manager...".to_string(),
-        ManagerStatus::Upgrading => "Status: Upgrading packages...".to_string(),
-        ManagerStatus::Cleaning => "Status: Cleaning up...".to_string(),
+        ManagerStatus::Running(operation, logs) => {
+            if logs.is_empty() {
+                format!("Status: {}...", operation)
+            } else {
+                format!("Status: {}\n\nCommand Output:\n{}", operation, logs)
+            }
+        }
         ManagerStatus::Success => "Status: ✓ All operations completed successfully".to_string(),
         ManagerStatus::Failed(err) => format!("Status: ✗ Failed - {}", err),
     };

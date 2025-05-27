@@ -11,10 +11,7 @@ pub struct DetectedManager {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ManagerStatus {
     Pending,
-    Refreshing,
-    SelfUpdating,
-    Upgrading,
-    Cleaning,
+    Running(String, String), // (operation_name, logs)
     Success,
     Failed(String),
 }

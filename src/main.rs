@@ -18,7 +18,11 @@ struct Cli {
 enum Commands {
     #[command(about = "Upgrade all package managers")]
     Upgrade {
-        #[arg(short, long, help = "Selective mode - wait for user to select which managers to update")]
+        #[arg(
+            short,
+            long,
+            help = "Selective mode - wait for user to select which managers to update"
+        )]
         selective: bool,
     },
     #[command(about = "List detected package managers")]
