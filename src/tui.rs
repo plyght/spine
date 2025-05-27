@@ -24,7 +24,7 @@ enum AppState {
     DetailView(usize),
 }
 
-pub async fn run_tui(mut managers: Vec<DetectedManager>, _config: Config) -> Result<()> {
+pub async fn run_tui(mut managers: Vec<DetectedManager>, _config: Config, selective: bool) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -36,18 +36,24 @@ pub async fn run_tui(mut managers: Vec<DetectedManager>, _config: Config) -> Res
     list_state.select(Some(0));
     let mut app_state = AppState::ManagerList;
 
-    // Start all manager workflows in parallel
+    // Track which managers have started their workflows
+    let mut started_workflows: Vec<bool> = vec![false; managers.len()];
+    
+    // Start all manager workflows in parallel (only if not in selective mode)
     let mut join_set = JoinSet::new();
-    for (i, manager) in managers.iter().enumerate() {
-        let mut manager = manager.clone();
-        join_set.spawn(async move {
-            let _ = execute_manager_workflow(&mut manager).await;
-            (i, manager)
-        });
+    if !selective {
+        for (i, manager) in managers.iter().enumerate() {
+            let mut manager = manager.clone();
+            started_workflows[i] = true;
+            join_set.spawn(async move {
+                let _ = execute_manager_workflow(&mut manager).await;
+                (i, manager)
+            });
+        }
     }
 
     loop {
-        terminal.draw(|f| ui(f, &managers, &mut list_state, &app_state))?;
+        terminal.draw(|f| ui(f, &managers, &mut list_state, &app_state, selective))?;
 
         // Check for completed tasks
         while let Some(result) = join_set.try_join_next() {
@@ -66,9 +72,19 @@ pub async fn run_tui(mut managers: Vec<DetectedManager>, _config: Config) -> Res
         }
 
         // Check if all managers are done
-        let all_done = managers
-            .iter()
-            .all(|m| matches!(m.status, ManagerStatus::Success | ManagerStatus::Failed(_)));
+        let all_done = if selective {
+            // In selective mode, only check started workflows
+            managers
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| started_workflows[*i])
+                .all(|(_, m)| matches!(m.status, ManagerStatus::Success | ManagerStatus::Failed(_)))
+        } else {
+            // In non-selective mode, check all managers
+            managers
+                .iter()
+                .all(|m| matches!(m.status, ManagerStatus::Success | ManagerStatus::Failed(_)))
+        };
 
         // Handle input
         if event::poll(std::time::Duration::from_millis(100))? {
@@ -95,6 +111,18 @@ pub async fn run_tui(mut managers: Vec<DetectedManager>, _config: Config) -> Res
                         }
                         (AppState::ManagerList, KeyCode::Enter) => {
                             app_state = AppState::DetailView(selected);
+                        }
+                        // Selective mode: start workflow for selected manager
+                        (AppState::ManagerList, KeyCode::Char(' ')) if selective => {
+                            if selected < managers.len() && !started_workflows[selected] {
+                                let mut manager = managers[selected].clone();
+                                let index = selected;
+                                started_workflows[selected] = true;
+                                join_set.spawn(async move {
+                                    let _ = execute_manager_workflow(&mut manager).await;
+                                    (index, manager)
+                                });
+                            }
                         }
                         // Detail view navigation
                         (AppState::DetailView(_), KeyCode::Char('h') | KeyCode::Left) => {
@@ -135,10 +163,11 @@ fn ui(
     managers: &[DetectedManager],
     list_state: &mut ListState,
     app_state: &AppState,
+    selective: bool,
 ) {
     match app_state {
         AppState::ManagerList => {
-            render_manager_list(f, managers, list_state);
+            render_manager_list(f, managers, list_state, selective);
         }
         AppState::DetailView(manager_index) => {
             if let Some(manager) = managers.get(*manager_index) {
@@ -148,7 +177,7 @@ fn ui(
     }
 }
 
-fn render_manager_list(f: &mut Frame, managers: &[DetectedManager], list_state: &mut ListState) {
+fn render_manager_list(f: &mut Frame, managers: &[DetectedManager], list_state: &mut ListState, selective: bool) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
@@ -192,9 +221,13 @@ fn render_manager_list(f: &mut Frame, managers: &[DetectedManager], list_state: 
     f.render_stateful_widget(list, chunks[0], list_state);
 
     // Help text
-    let help_text = Paragraph::new("Navigate: ↑↓/j k | Select: Enter | Quit: q")
-        .block(Block::default().borders(Borders::ALL).title("Help"))
-        .style(Style::default().fg(Color::Cyan));
+    let help_text = if selective {
+        Paragraph::new("Navigate: ↑↓/j k | Start: Space | Detail: Enter | Quit: q")
+    } else {
+        Paragraph::new("Navigate: ↑↓/j k | Detail: Enter | Quit: q")
+    }
+    .block(Block::default().borders(Borders::ALL).title("Help"))
+    .style(Style::default().fg(Color::Cyan));
 
     f.render_widget(help_text, chunks[1]);
 }

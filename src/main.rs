@@ -17,7 +17,10 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     #[command(about = "Upgrade all package managers")]
-    Upgrade,
+    Upgrade {
+        #[arg(short, long, help = "Selective mode - wait for user to select which managers to update")]
+        selective: bool,
+    },
     #[command(about = "List detected package managers")]
     List,
 }
@@ -27,8 +30,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Upgrade => {
-            upgrade().await?;
+        Commands::Upgrade { selective } => {
+            upgrade(selective).await?;
         }
         Commands::List => {
             list_managers().await?;
@@ -81,7 +84,7 @@ async fn list_managers() -> Result<()> {
     Ok(())
 }
 
-async fn upgrade() -> Result<()> {
+async fn upgrade(selective: bool) -> Result<()> {
     // Load configuration with error handling
     let config = match config::load_config().await {
         Ok(config) => config,
@@ -141,7 +144,7 @@ async fn upgrade() -> Result<()> {
     println!("Starting upgrade process...\n");
 
     // Run the TUI workflow
-    match tui::run_tui(managers, config).await {
+    match tui::run_tui(managers, config, selective).await {
         Ok(()) => {
             println!("Upgrade process completed.");
         }

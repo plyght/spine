@@ -5,7 +5,7 @@
 name = "Homebrew"
 check_command = "brew --version"
 refresh = "brew update"
-self_update = "brew upgrade brew"
+self_update = "brew update"
 upgrade_all = "brew upgrade"
 cleanup = "brew cleanup"
 requires_sudo = false
@@ -38,7 +38,7 @@ requires_sudo = true
 name = "Pacman"
 check_command = "pacman --version"
 refresh = "pacman -Sy"
-upgrade_all = "pacman -Su --noconfirm"
+upgrade_all = "pacman -Syu --noconfirm"
 cleanup = "pacman -Sc --noconfirm"
 requires_sudo = true
 
@@ -54,8 +54,8 @@ requires_sudo = true
 name = "Portage"
 check_command = "emerge --version"
 refresh = "emerge --sync"
-upgrade_all = "emerge -uDN @world"
-cleanup = "emerge --depclean"
+upgrade_all = "emerge --ask -uDN @world"
+cleanup = "emerge --ask --depclean"
 requires_sudo = true
 
 [managers.nix]
@@ -70,7 +70,7 @@ requires_sudo = false
 [managers.snap]
 name = "Snap"
 check_command = "snap version"
-refresh = "snap refresh"
+refresh = "snap refresh --list"
 upgrade_all = "snap refresh"
 requires_sudo = true
 
@@ -111,6 +111,6 @@ requires_sudo = true
 name = "XBPS"
 check_command = "xbps-query --version"
 refresh = "xbps-install -S"
-upgrade_all = "xbps-install -u"
+upgrade_all = "xbps-install -Su"
 cleanup = "xbps-remove -O"
 requires_sudo = true
