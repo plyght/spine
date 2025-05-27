@@ -23,3 +23,9 @@ Thumbs.db
 
 # Config files (user-specific)
 backbone.toml.local
+
+# Node.js (for development tools)
+node_modules/
+package-lock.json
+yarn.lock
+bun.lockb

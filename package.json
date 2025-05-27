@@ -1,0 +1,11 @@
+{
+  "name": "spine",
+  "version": "1.0.0",
+  "private": true,
+  "devDependencies": {
+    "husky": "^9.0.0"
+  },
+  "scripts": {
+    "prepare": "husky"
+  }
+}
