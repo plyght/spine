@@ -114,3 +114,110 @@ refresh = "xbps-install -S"
 upgrade_all = "xbps-install -Su"
 cleanup = "xbps-remove -O"
 requires_sudo = true
+
+[managers.npm]
+name = "npm"
+check_command = "npm --version"
+refresh = "npm update -g"
+self_update = "npm install -g npm@latest"
+upgrade_all = "npm update -g"
+cleanup = "npm cache clean --force"
+requires_sudo = false
+
+[managers.yarn]
+name = "Yarn"
+check_command = "yarn --version"
+refresh = "yarn global upgrade"
+self_update = "yarn set version latest"
+upgrade_all = "yarn global upgrade"
+requires_sudo = false
+
+[managers.pnpm]
+name = "pnpm"
+check_command = "pnpm --version"
+refresh = "pnpm update -g"
+self_update = "pnpm add -g pnpm"
+upgrade_all = "pnpm update -g"
+requires_sudo = false
+
+[managers.pip]
+name = "pip"
+check_command = "pip --version"
+refresh = "pip list --outdated"
+self_update = "python -m pip install --upgrade pip"
+upgrade_all = "python -m pip install --upgrade pip setuptools wheel"
+requires_sudo = false
+
+[managers.pip3]
+name = "pip3"
+check_command = "pip3 --version"
+refresh = "pip3 list --outdated"
+self_update = "python3 -m pip install --upgrade pip"
+upgrade_all = "python3 -m pip install --upgrade pip setuptools wheel"
+requires_sudo = false
+
+[managers.rustup]
+name = "Rustup"
+check_command = "rustup --version"
+refresh = "rustup check"
+self_update = "rustup self update"
+upgrade_all = "rustup update"
+requires_sudo = false
+
+[managers.cargo]
+name = "Cargo"
+check_command = "cargo --version"
+refresh = "cargo install-update --list"
+upgrade_all = "cargo install-update -a"
+requires_sudo = false
+
+[managers.composer]
+name = "Composer"
+check_command = "composer --version"
+refresh = "composer diagnose"
+self_update = "composer self-update"
+upgrade_all = "composer global update"
+requires_sudo = false
+
+[managers.gem]
+name = "RubyGems"
+check_command = "gem --version"
+refresh = "gem outdated"
+self_update = "gem update --system"
+upgrade_all = "gem update"
+cleanup = "gem cleanup"
+requires_sudo = false
+
+[managers.go]
+name = "Go modules"
+check_command = "go version"
+refresh = "go list -u -m all"
+upgrade_all = "go get -u all"
+requires_sudo = false
+
+[managers.conda]
+name = "Conda"
+check_command = "conda --version"
+refresh = "conda update --all"
+self_update = "conda update conda"
+upgrade_all = "conda update --all"
+cleanup = "conda clean --all"
+requires_sudo = false
+
+[managers.scoop]
+name = "Scoop"
+check_command = "scoop --version"
+refresh = "scoop update"
+self_update = "scoop update scoop"
+upgrade_all = "scoop update *"
+cleanup = "scoop cleanup *"
+requires_sudo = false
+
+[managers.bun]
+name = "Bun"
+check_command = "bun --version"
+refresh = "bun update"
+self_update = "bun upgrade"
+upgrade_all = "bun update"
+cleanup = "bun pm cache rm"
+requires_sudo = false
