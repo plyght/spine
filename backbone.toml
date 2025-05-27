@@ -1,0 +1,116 @@
+# Package Manager Configuration File for Spine
+# Each section defines a package manager with its commands
+
+[managers.brew]
+name = "Homebrew"
+check_command = "brew --version"
+refresh = "brew update"
+self_update = "brew upgrade brew"
+upgrade_all = "brew upgrade"
+cleanup = "brew cleanup"
+requires_sudo = false
+
+[managers.apt]
+name = "APT"
+check_command = "apt --version"
+refresh = "apt update"
+upgrade_all = "apt upgrade -y"
+cleanup = "apt autoremove -y && apt autoclean"
+requires_sudo = true
+
+[managers.yum]
+name = "YUM"
+check_command = "yum --version"
+refresh = "yum check-update"
+upgrade_all = "yum update -y"
+cleanup = "yum autoremove -y && yum clean all"
+requires_sudo = true
+
+[managers.dnf]
+name = "DNF"
+check_command = "dnf --version"
+refresh = "dnf check-update"
+upgrade_all = "dnf upgrade -y"
+cleanup = "dnf autoremove -y && dnf clean all"
+requires_sudo = true
+
+[managers.pacman]
+name = "Pacman"
+check_command = "pacman --version"
+refresh = "pacman -Sy"
+upgrade_all = "pacman -Su --noconfirm"
+cleanup = "pacman -Sc --noconfirm"
+requires_sudo = true
+
+[managers.zypper]
+name = "Zypper"
+check_command = "zypper --version"
+refresh = "zypper refresh"
+upgrade_all = "zypper update -y"
+cleanup = "zypper clean -a"
+requires_sudo = true
+
+[managers.emerge]
+name = "Portage"
+check_command = "emerge --version"
+refresh = "emerge --sync"
+upgrade_all = "emerge -uDN @world"
+cleanup = "emerge --depclean"
+requires_sudo = true
+
+[managers.nix]
+name = "Nix"
+check_command = "nix --version"
+refresh = "nix-channel --update"
+self_update = "nix upgrade-nix"
+upgrade_all = "nix-env -u"
+cleanup = "nix-collect-garbage -d"
+requires_sudo = false
+
+[managers.snap]
+name = "Snap"
+check_command = "snap version"
+refresh = "snap refresh"
+upgrade_all = "snap refresh"
+requires_sudo = true
+
+[managers.flatpak]
+name = "Flatpak"
+check_command = "flatpak --version"
+refresh = "flatpak update"
+upgrade_all = "flatpak update -y"
+cleanup = "flatpak uninstall --unused -y"
+requires_sudo = false
+
+[managers.port]
+name = "MacPorts"
+check_command = "port version"
+refresh = "port sync"
+self_update = "port selfupdate"
+upgrade_all = "port upgrade outdated"
+cleanup = "port uninstall inactive"
+requires_sudo = true
+
+[managers.pkg]
+name = "FreeBSD Packages"
+check_command = "pkg version"
+refresh = "pkg update"
+upgrade_all = "pkg upgrade -y"
+cleanup = "pkg autoremove -y && pkg clean"
+requires_sudo = true
+
+[managers.apk]
+name = "Alpine Package Keeper"
+check_command = "apk --version"
+refresh = "apk update"
+upgrade_all = "apk upgrade"
+cleanup = "apk cache clean"
+requires_sudo = true
+
+[managers.xbps]
+name = "XBPS"
+check_command = "xbps-query --version"
+refresh = "xbps-install -S"
+upgrade_all = "xbps-install -u"
+cleanup = "xbps-remove -O"
+requires_sudo = true
