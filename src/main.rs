@@ -1,5 +1,5 @@
-use clap::{Parser, Subcommand};
 use anyhow::Result;
+use clap::{Parser, Subcommand};
 
 mod config;
 mod detect;
@@ -25,7 +25,7 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    
+
     match cli.command {
         Commands::Upgrade => {
             upgrade().await?;
@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
             list_managers().await?;
         }
     }
-    
+
     Ok(())
 }
 
@@ -47,7 +47,7 @@ async fn list_managers() -> Result<()> {
             std::process::exit(1);
         }
     };
-    
+
     let managers = match detect::detect_package_managers(&config).await {
         Ok(managers) => managers,
         Err(e) => {
@@ -55,14 +55,21 @@ async fn list_managers() -> Result<()> {
             std::process::exit(1);
         }
     };
-    
+
     if managers.is_empty() {
         println!("No package managers detected on this system.");
-        println!("Spine checked for: {}", 
-            config.managers.keys().cloned().collect::<Vec<_>>().join(", "));
+        println!(
+            "Spine checked for: {}",
+            config
+                .managers
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         return Ok(());
     }
-    
+
     println!("Detected {} package manager(s):", managers.len());
     for manager in &managers {
         println!("  ✓ {} ({})", manager.name, manager.config.name);
@@ -70,7 +77,7 @@ async fn list_managers() -> Result<()> {
         println!("    Requires sudo: {}", manager.config.requires_sudo);
         println!();
     }
-    
+
     Ok(())
 }
 
@@ -84,12 +91,12 @@ async fn upgrade() -> Result<()> {
             std::process::exit(1);
         }
     };
-    
+
     // Check for sudo availability if any managers require it
     let requires_sudo = config.managers.values().any(|m| m.requires_sudo);
     if requires_sudo {
         match execute::check_sudo_availability().await {
-            true => {},
+            true => {}
             false => {
                 eprintln!("Warning: Some package managers require sudo access.");
                 eprintln!("Please ensure you have the necessary privileges or run with sudo.");
@@ -97,7 +104,7 @@ async fn upgrade() -> Result<()> {
             }
         }
     }
-    
+
     // Detect available package managers
     let managers = match detect::detect_package_managers(&config).await {
         Ok(managers) => managers,
@@ -106,19 +113,33 @@ async fn upgrade() -> Result<()> {
             std::process::exit(1);
         }
     };
-    
+
     if managers.is_empty() {
         println!("No package managers detected on this system.");
-        println!("Spine checked for: {}", 
-            config.managers.keys().cloned().collect::<Vec<_>>().join(", "));
+        println!(
+            "Spine checked for: {}",
+            config
+                .managers
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         return Ok(());
     }
-    
-    println!("Detected {} package manager(s): {}", 
+
+    println!(
+        "Detected {} package manager(s): {}",
         managers.len(),
-        managers.iter().map(|m| &m.name).cloned().collect::<Vec<_>>().join(", "));
+        managers
+            .iter()
+            .map(|m| &m.name)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     println!("Starting upgrade process...\n");
-    
+
     // Run the TUI workflow
     match tui::run_tui(managers, config).await {
         Ok(()) => {
@@ -129,6 +150,6 @@ async fn upgrade() -> Result<()> {
             std::process::exit(1);
         }
     }
-    
+
     Ok(())
 }

@@ -21,7 +21,7 @@ pub enum ManagerStatus {
 
 pub async fn detect_package_managers(config: &Config) -> Result<Vec<DetectedManager>> {
     let mut detected = Vec::new();
-    
+
     for (name, manager_config) in &config.managers {
         if is_manager_available(&manager_config.check_command).await? {
             detected.push(DetectedManager {
@@ -31,7 +31,7 @@ pub async fn detect_package_managers(config: &Config) -> Result<Vec<DetectedMana
             });
         }
     }
-    
+
     Ok(detected)
 }
 
@@ -40,7 +40,7 @@ async fn is_manager_available(check_command: &str) -> Result<bool> {
     if parts.is_empty() {
         return Ok(false);
     }
-    
+
     let command = parts[0];
     Ok(which::which(command).is_ok())
 }

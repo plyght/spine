@@ -1,27 +1,32 @@
 use crate::detect::{DetectedManager, ManagerStatus};
 use anyhow::Result;
-use tokio::process::Command;
 use std::process::Stdio;
 use std::time::Duration;
+use tokio::process::Command;
 
 #[derive(Debug, Clone)]
 pub struct ExecutionResult {
     pub success: bool,
-    pub stdout: String,
     pub stderr: String,
-    pub exit_code: Option<i32>,
 }
 
 pub async fn execute_manager_workflow(manager: &mut DetectedManager) -> Result<()> {
     let config = &manager.config;
-    
+
     // Refresh repositories
     if let Some(refresh_cmd) = &config.refresh {
         manager.status = ManagerStatus::Refreshing;
-        match execute_command_with_timeout(refresh_cmd, config.requires_sudo, Duration::from_secs(300)).await {
-            Ok(result) if result.success => {},
+        match execute_command_with_timeout(
+            refresh_cmd,
+            config.requires_sudo,
+            Duration::from_secs(300),
+        )
+        .await
+        {
+            Ok(result) if result.success => {}
             Ok(result) => {
-                manager.status = ManagerStatus::Failed(format!("Refresh failed: {}", result.stderr));
+                manager.status =
+                    ManagerStatus::Failed(format!("Refresh failed: {}", result.stderr));
                 return Ok(());
             }
             Err(e) => {
@@ -30,14 +35,21 @@ pub async fn execute_manager_workflow(manager: &mut DetectedManager) -> Result<(
             }
         }
     }
-    
+
     // Self-update
     if let Some(self_update_cmd) = &config.self_update {
         manager.status = ManagerStatus::SelfUpdating;
-        match execute_command_with_timeout(self_update_cmd, config.requires_sudo, Duration::from_secs(600)).await {
-            Ok(result) if result.success => {},
+        match execute_command_with_timeout(
+            self_update_cmd,
+            config.requires_sudo,
+            Duration::from_secs(600),
+        )
+        .await
+        {
+            Ok(result) if result.success => {}
             Ok(result) => {
-                manager.status = ManagerStatus::Failed(format!("Self-update failed: {}", result.stderr));
+                manager.status =
+                    ManagerStatus::Failed(format!("Self-update failed: {}", result.stderr));
                 return Ok(());
             }
             Err(e) => {
@@ -46,11 +58,17 @@ pub async fn execute_manager_workflow(manager: &mut DetectedManager) -> Result<(
             }
         }
     }
-    
+
     // Upgrade all packages
     manager.status = ManagerStatus::Upgrading;
-    match execute_command_with_timeout(&config.upgrade_all, config.requires_sudo, Duration::from_secs(3600)).await {
-        Ok(result) if result.success => {},
+    match execute_command_with_timeout(
+        &config.upgrade_all,
+        config.requires_sudo,
+        Duration::from_secs(3600),
+    )
+    .await
+    {
+        Ok(result) if result.success => {}
         Ok(result) => {
             manager.status = ManagerStatus::Failed(format!("Upgrade failed: {}", result.stderr));
             return Ok(());
@@ -60,14 +78,21 @@ pub async fn execute_manager_workflow(manager: &mut DetectedManager) -> Result<(
             return Ok(());
         }
     }
-    
+
     // Cleanup
     if let Some(cleanup_cmd) = &config.cleanup {
         manager.status = ManagerStatus::Cleaning;
-        match execute_command_with_timeout(cleanup_cmd, config.requires_sudo, Duration::from_secs(300)).await {
-            Ok(result) if result.success => {},
+        match execute_command_with_timeout(
+            cleanup_cmd,
+            config.requires_sudo,
+            Duration::from_secs(300),
+        )
+        .await
+        {
+            Ok(result) if result.success => {}
             Ok(result) => {
-                manager.status = ManagerStatus::Failed(format!("Cleanup failed: {}", result.stderr));
+                manager.status =
+                    ManagerStatus::Failed(format!("Cleanup failed: {}", result.stderr));
                 return Ok(());
             }
             Err(e) => {
@@ -76,21 +101,23 @@ pub async fn execute_manager_workflow(manager: &mut DetectedManager) -> Result<(
             }
         }
     }
-    
+
     manager.status = ManagerStatus::Success;
     Ok(())
 }
 
-async fn execute_command_with_timeout(command: &str, requires_sudo: bool, timeout: Duration) -> Result<ExecutionResult> {
+async fn execute_command_with_timeout(
+    command: &str,
+    requires_sudo: bool,
+    timeout: Duration,
+) -> Result<ExecutionResult> {
     let mut cmd = build_command(command, requires_sudo)?;
-    
+
     let output = tokio::time::timeout(timeout, cmd.output()).await??;
-    
+
     Ok(ExecutionResult {
         success: output.status.success(),
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code(),
     })
 }
 
@@ -99,13 +126,13 @@ fn build_command(command: &str, requires_sudo: bool) -> Result<Command> {
     if parts.is_empty() {
         anyhow::bail!("Empty command");
     }
-    
+
     let mut cmd = if requires_sudo {
         // Check if sudo is available
         if which::which("sudo").is_err() {
             anyhow::bail!("sudo is required but not available");
         }
-        
+
         let mut c = Command::new("sudo");
         c.arg("-n"); // Non-interactive mode
         c.args(&parts);
@@ -117,11 +144,11 @@ fn build_command(command: &str, requires_sudo: bool) -> Result<Command> {
         }
         c
     };
-    
+
     cmd.stdout(Stdio::piped())
-       .stderr(Stdio::piped())
-       .stdin(Stdio::null());
-    
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null());
+
     Ok(cmd)
 }
 
@@ -129,7 +156,7 @@ pub async fn check_sudo_availability() -> bool {
     if which::which("sudo").is_err() {
         return false;
     }
-    
+
     // Test if we can run sudo without password prompt
     match Command::new("sudo")
         .args(["-n", "true"])
