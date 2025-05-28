@@ -19,7 +19,7 @@ Spine serves as the central support structure that connects and coordinates all 
 
 ```bash
 # From source
-git clone https://github.com/yourusername/spine.git
+git clone https://github.com/plyght/spine.git
 cd spine
 cargo build --release
 sudo cp target/release/spn /usr/local/bin/
