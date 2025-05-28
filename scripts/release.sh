@@ -69,6 +69,122 @@ if [[ "$VIEWER_PERMISSION" != "ADMIN" && "$VIEWER_PERMISSION" != "WRITE" ]]; the
     exit 1
 fi
 
+# Function to execute function calls for AI
+execute_function_call() {
+    local function_name="$1"
+    local arguments="$2"
+    
+    case "$function_name" in
+        "search_repository_info")
+            local repo_name
+            repo_name=$(echo "$arguments" | jq -r '.repository_name // ""')
+            if [[ -n "$repo_name" ]]; then
+                # Search for repository information online
+                local search_results
+                search_results=$(curl -s "https://api.github.com/search/repositories?q=${repo_name}&sort=stars&order=desc" | jq -r '.items[0] | select(.name) | "Description: " + (.description // "No description") + "\nLanguage: " + (.language // "Unknown") + "\nStars: " + (.stargazers_count | tostring) + "\nTopics: " + (.topics | join(", "))' 2>/dev/null || echo "Repository information not found")
+                echo "$search_results"
+            else
+                echo "Repository name not provided"
+            fi
+            ;;
+        "get_readme_content")
+            if [[ -f "README.md" ]]; then
+                cat README.md 2>/dev/null || echo "README.md exists but cannot be read"
+            else
+                echo "No README.md found in repository"
+            fi
+            ;;
+        "get_repository_description")
+            gh repo view --json description,topics,language -q '"Description: " + (.description // "No description") + "\nLanguage: " + (.language // "Unknown") + "\nTopics: " + (.topics | join(", "))' 2>/dev/null || echo "Could not fetch repository description"
+            ;;
+        "get_previous_releases")
+            local limit
+            limit=$(echo "$arguments" | jq -r '.limit // 5')
+            gh release list --limit "$limit" --json name,tagName,body,publishedAt -q '.[] | "Release: " + .name + " (" + .tagName + ")\nPublished: " + .publishedAt + "\nNotes:\n" + (.body // "No release notes") + "\n---"' 2>/dev/null || echo "No previous releases found"
+            ;;
+        "get_project_structure")
+            local depth
+            depth=$(echo "$arguments" | jq -r '.depth // 2')
+            find . -type f -name "*.rs" -o -name "*.toml" -o -name "*.md" -o -name "*.json" -o -name "*.yaml" -o -name "*.yml" | grep -v "target/" | grep -v "node_modules/" | head -30 | sort 2>/dev/null || echo "Could not read project structure"
+            ;;
+        "get_git_changes")
+            local last_tag
+            last_tag=$(echo "$arguments" | jq -r '.since_tag // ""')
+            if [[ -n "$last_tag" ]]; then
+                git diff --stat "$last_tag..HEAD" 2>/dev/null | head -20 || echo "Could not get git changes since $last_tag"
+            else
+                git diff --stat HEAD~10..HEAD 2>/dev/null | head -20 || echo "Could not get recent git changes"
+            fi
+            ;;
+        "get_recent_activity")
+            local days
+            days=$(echo "$arguments" | jq -r '.days // 30')
+            local date_threshold
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                date_threshold=$(date -v-${days}d +%Y-%m-%d)
+            else
+                date_threshold=$(date -d "$days days ago" +%Y-%m-%d)
+            fi
+            {
+                echo "Recent Issues (last $days days):"
+                gh issue list --limit 5 --state all --search "created:>$date_threshold" --json title,state,createdAt -q '.[] | "- " + .title + " (" + .state + ", " + .createdAt + ")"' 2>/dev/null || echo "No recent issues"
+                echo -e "\nRecent PRs (last $days days):"
+                gh pr list --limit 5 --state all --search "created:>$date_threshold" --json title,state,createdAt -q '.[] | "- " + .title + " (" + .state + ", " + .createdAt + ")"' 2>/dev/null || echo "No recent PRs"
+            }
+            ;;
+        "analyze_commit_types")
+            local last_tag
+            last_tag=$(echo "$arguments" | jq -r '.since_tag // ""')
+            local commits
+            if [[ -n "$last_tag" ]]; then
+                commits=$(git log --oneline --no-merges "$last_tag..HEAD" 2>/dev/null || echo "")
+            else
+                commits=$(git log --oneline --no-merges HEAD~20..HEAD 2>/dev/null || echo "")
+            fi
+            
+            if [[ -n "$commits" ]]; then
+                echo "Commit Analysis:"
+                echo "$commits" | awk '
+                BEGIN { feat=0; fix=0; docs=0; refactor=0; other=0 }
+                /^[a-f0-9]+ (feat|add|implement)/ { feat++ }
+                /^[a-f0-9]+ (fix|resolve|correct)/ { fix++ }
+                /^[a-f0-9]+ (docs|update.*readme|documentation)/ { docs++ }
+                /^[a-f0-9]+ (refactor|cleanup|reorganize)/ { refactor++ }
+                ! /^[a-f0-9]+ (feat|add|implement|fix|resolve|correct|docs|update.*readme|documentation|refactor|cleanup|reorganize)/ { other++ }
+                END {
+                    print "Features/Additions: " feat
+                    print "Bug Fixes: " fix  
+                    print "Documentation: " docs
+                    print "Refactoring: " refactor
+                    print "Other: " other
+                }'
+            else
+                echo "No commits found for analysis"
+            fi
+            ;;
+        "get_main_source_overview")
+            {
+                echo "Main source files overview:"
+                if [[ -f "src/main.rs" ]]; then
+                    echo "=== src/main.rs (first 30 lines) ==="
+                    head -30 src/main.rs | sed 's/^/    /'
+                fi
+                if [[ -f "Cargo.toml" ]]; then
+                    echo -e "\n=== Cargo.toml ==="
+                    cat Cargo.toml | sed 's/^/    /'
+                fi
+                if [[ -f "package.json" ]]; then
+                    echo -e "\n=== package.json (description and scripts) ==="
+                    jq -r '{description, scripts}' package.json 2>/dev/null | sed 's/^/    /' || echo "    Could not parse package.json"
+                fi
+            } 2>/dev/null || echo "Could not read main source files"
+            ;;
+        *)
+            echo "Unknown function: $function_name"
+            ;;
+    esac
+}
+
 # Function to generate AI-powered release notes
 generate_ai_release_notes() {
     local version="$1"
@@ -104,23 +220,210 @@ generate_ai_release_notes() {
     # Prepare the prompt for OpenAI
     local prompt
     read -r -d '' prompt <<EOF
-Generate professional release notes for version ${version} of the ${repo_name} project.
+You are tasked with generating professional release notes for ${repo_name} ${version}.
 
-Based on these git commits:
+Previous tag: ${last_tag:-"(no previous releases)"}
+
+IMPORTANT: Before writing release notes, you MUST gather comprehensive context by calling these functions:
+1. get_repository_description - understand the project
+2. get_readme_content - learn what the project does
+3. get_main_source_overview - see main source files to understand functionality
+4. get_previous_releases - see past release notes to avoid repetition
+5. get_project_structure - understand codebase organization
+6. analyze_commit_types - categorize the changes
+7. get_git_changes - see actual file modifications
+
+Available git commits since last release:
 ${git_log}
 
-Please create release notes that:
-1. Start with a brief summary of what's new in this release
-2. Group changes into categories like: New Features, Bug Fixes, Improvements, etc.
-3. Use clear, user-friendly language
-4. Highlight the most important changes
-5. Keep it concise but informative
-6. Format in markdown
+After gathering context, write release notes following these requirements:
+- Write in active voice focusing on user benefits
+- Use specific action words (add, fix, improve, update)
+- Group into logical sections (New Features, Improvements, Bug Fixes, etc.)
+- Avoid repeating content from previous releases
+- Be specific about what changed, not just that something changed
+- Omit purely internal changes unless they impact users
+- Format as clean markdown with bullet points
+- Keep under 250 words total
+- No commit hashes, PR numbers, or technical jargon
 
-Do not include commit hashes or technical implementation details.
+Example format:
+## What's New
+Brief summary highlighting the most important changes.
+
+### New Features
+- Add [specific capability] for [user benefit]
+- Implement [feature] to [solve user problem]
+
+### Improvements
+- Enhance [specific area] performance
+- Update [component] with [user-facing improvement]
+
+### Bug Fixes
+- Fix [specific issue] affecting [scenario]
+- Resolve [problem] in [context]
+
+Remember: Call the functions first to understand the project and avoid repetition!
 EOF
     
-    # Call OpenAI API
+    # Define tools for function calling
+    local tools
+    read -r -d '' tools <<'EOF'
+[
+    {
+        "type": "function",
+        "function": {
+            "name": "search_repository_info",
+            "description": "Search for information about a repository online to understand its purpose and context",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repository_name": {
+                        "type": "string",
+                        "description": "The name of the repository to search for"
+                    }
+                },
+                "required": ["repository_name"],
+                "additionalProperties": false
+            },
+            "strict": true
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_readme_content",
+            "description": "Get the content of the README.md file to understand the project",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            },
+            "strict": true
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_repository_description",
+            "description": "Get the GitHub repository description, topics, and language information",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            },
+            "strict": true
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_previous_releases",
+            "description": "Get previous release notes to avoid repeating content and understand release history",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "number",
+                        "description": "Number of previous releases to fetch (default: 5)"
+                    }
+                },
+                "additionalProperties": false
+            },
+            "strict": true
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_project_structure",
+            "description": "Get the project file structure to understand codebase organization",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "depth": {
+                        "type": "number",
+                        "description": "Directory depth to explore (default: 2)"
+                    }
+                },
+                "additionalProperties": false
+            },
+            "strict": true
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_git_changes",
+            "description": "Get actual file changes statistics since last tag or recent commits",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "since_tag": {
+                        "type": ["string", "null"],
+                        "description": "Git tag to compare from (optional, uses recent commits if not provided)"
+                    }
+                },
+                "required": ["since_tag"],
+                "additionalProperties": false
+            },
+            "strict": true
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_recent_activity",
+            "description": "Get recent GitHub issues and pull requests for development context",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {
+                        "type": "number",
+                        "description": "Number of days back to look for activity (default: 30)"
+                    }
+                },
+                "additionalProperties": false
+            },
+            "strict": true
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_commit_types",
+            "description": "Analyze commit messages to categorize changes by type (features, fixes, etc.)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "since_tag": {
+                        "type": ["string", "null"],
+                        "description": "Git tag to analyze from (optional, uses recent commits if not provided)"
+                    }
+                },
+                "required": ["since_tag"],
+                "additionalProperties": false
+            },
+            "strict": true
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_main_source_overview",
+            "description": "Get an overview of main source files to understand what the project does",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            },
+            "strict": true
+        }
+    }
+]
+EOF
+
+    # Initial API call with tools
     local response
     response=$(curl --fail --silent --show-error --retry 3 -w "\n%{http_code}" \
         -H "Authorization: Bearer ${OPENAI_API_KEY}" \
@@ -133,7 +436,8 @@ EOF
                     \"content\": $(printf '%s' "$prompt" | jq -R -s .)
                 }
             ],
-            \"max_completion_tokens\": 1000
+            \"tools\": $tools,
+            \"max_tokens\": 1000
         }" \
         "https://api.openai.com/v1/chat/completions")
     
@@ -147,6 +451,76 @@ EOF
     if [[ "$http_code" -ne 200 ]]; then
         print_warning "OpenAI API call failed (HTTP $http_code). Falling back to GitHub's auto-generated notes."
         return 1
+    fi
+    
+    # Check if model wants to call functions
+    local tool_calls
+    tool_calls=$(echo "$response_body" | jq -r '.choices[0].message.tool_calls // empty' 2>/dev/null)
+    
+    if [[ -n "$tool_calls" && "$tool_calls" != "null" ]]; then
+        # Build messages array with function results
+        local messages
+        messages='[{"role": "user", "content": '$(printf '%s' "$prompt" | jq -R -s .)'}, {"role": "assistant", "tool_calls": '$(echo "$response_body" | jq -r '.choices[0].message.tool_calls')'}'
+        
+        # Execute each function call
+        local function_results=()
+        while IFS= read -r tool_call; do
+            local function_name
+            local arguments
+            local call_id
+            function_name=$(echo "$tool_call" | jq -r '.function.name')
+            arguments=$(echo "$tool_call" | jq -r '.function.arguments')
+            call_id=$(echo "$tool_call" | jq -r '.id')
+            
+            # Auto-inject last_tag for functions that need it
+            if [[ "$function_name" == "get_git_changes" || "$function_name" == "analyze_commit_types" ]]; then
+                if [[ -n "$last_tag" ]]; then
+                    arguments=$(echo "$arguments" | jq --arg tag "$last_tag" '. + {since_tag: $tag}')
+                else
+                    arguments=$(echo "$arguments" | jq '. + {since_tag: null}')
+                fi
+            fi
+            
+            local result
+            result=$(execute_function_call "$function_name" "$arguments")
+            
+            # Properly escape the result for JSON
+            local escaped_result
+            escaped_result=$(printf '%s' "$result" | jq -R -s .)
+            
+            function_results+=('{"tool_call_id": "'$call_id'", "role": "tool", "content": '$escaped_result'}')
+        done < <(echo "$tool_calls" | jq -c '.[]')
+        
+        # Add function results to messages
+        for result in "${function_results[@]}"; do
+            messages+=', '$result
+        done
+        messages+=']'
+        
+        # Make second API call with function results
+        local final_response
+        final_response=$(curl --fail --silent --show-error --retry 3 -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"model\": \"o4-mini-2025-04-16\",
+                \"messages\": $messages,
+                \"tools\": $tools,
+                \"max_tokens\": 1000
+            }" \
+            "https://api.openai.com/v1/chat/completions")
+        
+        local final_http_code
+        final_http_code=$(echo "$final_response" | tail -n1)
+        local final_response_body
+        final_response_body=$(echo "$final_response" | sed '$d')
+        
+        if [[ "$final_http_code" -ne 200 ]]; then
+            print_warning "OpenAI API second call failed (HTTP $final_http_code). Falling back to GitHub's auto-generated notes."
+            return 1
+        fi
+        
+        response_body="$final_response_body"
     fi
     
     # Extract the content from the response
@@ -183,16 +557,71 @@ if [[ "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "master" ]]; then
     fi
 fi
 
-# Build the project
-print_status "Building release binary..."
-cargo build --release
+# Define target platforms
+TARGETS=(
+    "x86_64-unknown-linux-gnu"
+    "aarch64-unknown-linux-gnu"
+    "x86_64-apple-darwin"
+    "aarch64-apple-darwin"
+)
 
-# Check if binary exists
-BINARY_PATH="target/release/spn"
-if [ ! -f "$BINARY_PATH" ]; then
-    print_error "Binary not found at $BINARY_PATH"
+# Array to store built binaries
+BUILT_BINARIES=()
+
+# Build for multiple targets
+print_status "Building release binaries for multiple platforms..."
+
+for target in "${TARGETS[@]}"; do
+    print_status "Building for target: $target"
+    
+    # Install target if not already installed
+    if ! rustup target list --installed | grep -q "$target"; then
+        print_status "Installing target $target..."
+        rustup target add "$target"
+    fi
+    
+    # Build for target
+    if cargo build --release --target "$target"; then
+        binary_path="target/$target/release/spn"
+        if [ -f "$binary_path" ]; then
+            # Create target-specific binary name
+            case "$target" in
+                "x86_64-unknown-linux-gnu")
+                    binary_name="spn-linux-x64"
+                    ;;
+                "aarch64-unknown-linux-gnu")
+                    binary_name="spn-linux-arm64"
+                    ;;
+                "x86_64-apple-darwin")
+                    binary_name="spn-macos-x64"
+                    ;;
+                "aarch64-apple-darwin")
+                    binary_name="spn-macos-arm64"
+                    ;;
+                *)
+                    binary_name="spn-$target"
+                    ;;
+            esac
+            
+            # Copy binary with target-specific name
+            cp "$binary_path" "target/$binary_name"
+            BUILT_BINARIES+=("target/$binary_name#$binary_name")
+            print_status "Successfully built $binary_name"
+        else
+            print_warning "Binary not found for target $target, skipping..."
+        fi
+    else
+        print_warning "Failed to build for target $target, skipping..."
+    fi
+done
+
+# Check if at least one binary was built
+if [ ${#BUILT_BINARIES[@]} -eq 0 ]; then
+    print_error "No binaries were successfully built"
     exit 1
 fi
+
+print_status "Successfully built ${#BUILT_BINARIES[@]} binaries"
 
 # Create git tag
 print_status "Creating git tag $VERSION..."
@@ -217,7 +646,7 @@ if [[ $? -eq 0 && -n "$RELEASE_NOTES" ]]; then
     if ! gh release create "$VERSION" \
         --title "Release $VERSION" \
         --notes "$RELEASE_NOTES" \
-        "$BINARY_PATH#spine-binary-$(uname -s)-$(uname -m)"; then
+        "${BUILT_BINARIES[@]}"; then
         print_error "GitHub release creation failed."
         exit 1
     fi
@@ -226,7 +655,7 @@ else
     if ! gh release create "$VERSION" \
         --title "Release $VERSION" \
         --generate-notes \
-        "$BINARY_PATH#spine-binary-$(uname -s)-$(uname -m)"; then
+        "${BUILT_BINARIES[@]}"; then
         print_error "GitHub release creation failed."
         exit 1
     fi
