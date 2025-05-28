@@ -577,18 +577,9 @@ if [[ "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "master" ]]; then
     fi
 fi
 
-# Define target platforms based on current OS
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    TARGETS=(
-        "x86_64-apple-darwin"
-        "aarch64-apple-darwin"
-    )
-else
-    TARGETS=(
-        "x86_64-unknown-linux-gnu"
-        "aarch64-unknown-linux-gnu"
-    )
-fi
+# Build for current platform only to avoid cross-compilation issues
+CURRENT_TARGET=$(rustc -vV | grep host | cut -d' ' -f2)
+TARGETS=("$CURRENT_TARGET")
 
 # Array to store built binaries
 BUILT_BINARIES=()
@@ -624,7 +615,20 @@ for target in "${TARGETS[@]}"; do
                     binary_name="spn-macos-arm64"
                     ;;
                 *)
-                    binary_name="spn-$target"
+                    # Use current platform detection for unknown targets
+                    if [[ "$OSTYPE" == "darwin"* ]]; then
+                        if [[ "$(uname -m)" == "arm64" ]]; then
+                            binary_name="spn-macos-arm64"
+                        else
+                            binary_name="spn-macos-x64"
+                        fi
+                    else
+                        if [[ "$(uname -m)" == "aarch64" ]]; then
+                            binary_name="spn-linux-arm64"
+                        else
+                            binary_name="spn-linux-x64"
+                        fi
+                    fi
                     ;;
             esac
             
