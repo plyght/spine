@@ -21,7 +21,7 @@ print_error() {
 }
 
 # Check if version argument is provided
-if [ -z "$1" ]; then
+if [ "$#" -eq 0 ]; then
     print_error "Version argument required. Usage: ./scripts/release.sh v1.0.0"
     exit 1
 fi
@@ -81,7 +81,7 @@ generate_ai_release_notes() {
     
     # Get the latest tag (excluding the current one we're about to create)
     local last_tag
-    last_tag=$(git tag --sort=-version:refname | grep -v "^${version}$" | head -n 1 2>/dev/null || echo "")
+    last_tag=$(git tag --sort=-version:refname | grep -Fxv "${version}" | head -n1 2>/dev/null || echo "")
     
     # Get commit log since last tag or from beginning if no previous tag
     local git_log
@@ -102,7 +102,9 @@ generate_ai_release_notes() {
     repo_name=$(gh repo view --json name -q '.name' 2>/dev/null || echo "Unknown")
     
     # Prepare the prompt for OpenAI
-    local prompt="Generate professional release notes for version ${version} of the ${repo_name} project.
+    local prompt
+    read -r -d '' prompt <<EOF
+Generate professional release notes for version ${version} of the ${repo_name} project.
 
 Based on these git commits:
 ${git_log}
@@ -115,11 +117,12 @@ Please create release notes that:
 5. Keep it concise but informative
 6. Format in markdown
 
-Do not include commit hashes or technical implementation details."
+Do not include commit hashes or technical implementation details.
+EOF
     
     # Call OpenAI API
     local response
-    response=$(curl -s -w "\n%{http_code}" \
+    response=$(curl --fail --silent --show-error --retry 3 -w "\n%{http_code}" \
         -H "Authorization: Bearer ${OPENAI_API_KEY}" \
         -H "Content-Type: application/json" \
         -d "{
@@ -193,6 +196,10 @@ fi
 
 # Create git tag
 print_status "Creating git tag $VERSION..."
+if git rev-parse "$VERSION" >/dev/null 2>&1; then
+    print_error "Tag $VERSION already exists."
+    exit 1
+fi
 git tag -a "$VERSION" -m "Release $VERSION"
 
 # Push tag to origin
@@ -207,16 +214,22 @@ print_status "Generating release notes..."
 RELEASE_NOTES=$(generate_ai_release_notes "$VERSION")
 if [[ $? -eq 0 && -n "$RELEASE_NOTES" ]]; then
     print_status "Using AI-generated release notes"
-    gh release create "$VERSION" \
+    if ! gh release create "$VERSION" \
         --title "Release $VERSION" \
         --notes "$RELEASE_NOTES" \
-        "$BINARY_PATH#spine-binary-$(uname -s)-$(uname -m)"
+        "$BINARY_PATH#spine-binary-$(uname -s)-$(uname -m)"; then
+        print_error "GitHub release creation failed."
+        exit 1
+    fi
 else
     print_status "Using GitHub's auto-generated release notes"
-    gh release create "$VERSION" \
+    if ! gh release create "$VERSION" \
         --title "Release $VERSION" \
         --generate-notes \
-        "$BINARY_PATH#spine-binary-$(uname -s)-$(uname -m)"
+        "$BINARY_PATH#spine-binary-$(uname -s)-$(uname -m)"; then
+        print_error "GitHub release creation failed."
+        exit 1
+    fi
 fi
 
 print_status "Release $VERSION created successfully!"
