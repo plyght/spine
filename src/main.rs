@@ -4,7 +4,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::io;
 
 use crate::detect::{DetectedManager, ManagerStatus};
-use crate::execute::execute_manager_workflow;
+use crate::execute::execute_manager_workflow_simple;
 
 mod config;
 mod detect;
@@ -227,7 +227,7 @@ async fn run_manager_with_spinner(manager: &mut DetectedManager) -> Result<()> {
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
     // Execute the manager workflow
-    let result = execute_manager_workflow(manager).await;
+    let result = execute_manager_workflow_simple(manager).await;
 
     pb.finish_with_message(match &manager.status {
         ManagerStatus::Success => format!("✓ {} completed successfully", manager.name),

@@ -16,16 +16,18 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::io;
+use std::sync::{Arc, Mutex};
 use tokio::task::JoinSet;
 
 #[derive(Debug, Clone, PartialEq)]
 enum AppState {
     ManagerList,
     DetailView(usize),
+    LogsView(usize),
 }
 
 pub async fn run_tui(
-    mut managers: Vec<DetectedManager>,
+    managers: Vec<DetectedManager>,
     _config: Config,
     selective: bool,
 ) -> Result<()> {
@@ -35,37 +37,41 @@ pub async fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    // Convert managers to shared Arc<Mutex<>> for real-time updates
+    let shared_managers: Vec<Arc<Mutex<DetectedManager>>> = managers
+        .into_iter()
+        .map(|m| Arc::new(Mutex::new(m)))
+        .collect();
+
     let mut selected = 0;
     let mut list_state = ListState::default();
     list_state.select(Some(0));
     let mut app_state = AppState::ManagerList;
 
     // Track which managers have started their workflows
-    let mut started_workflows: Vec<bool> = vec![false; managers.len()];
+    let mut started_workflows: Vec<bool> = vec![false; shared_managers.len()];
 
     // Start all manager workflows in parallel (only if not in selective mode)
     let mut join_set = JoinSet::new();
     if !selective {
-        for (i, manager) in managers.iter().enumerate() {
-            let mut manager = manager.clone();
+        for (i, manager_ref) in shared_managers.iter().enumerate() {
+            let manager_ref = manager_ref.clone();
             started_workflows[i] = true;
             join_set.spawn(async move {
-                let _ = execute_manager_workflow(&mut manager).await;
-                (i, manager)
+                let _ = execute_manager_workflow(manager_ref).await;
+                i
             });
         }
     }
 
     loop {
-        terminal.draw(|f| ui(f, &managers, &mut list_state, &app_state, selective))?;
+        terminal.draw(|f| ui(f, &shared_managers, &mut list_state, &app_state, selective))?;
 
         // Check for completed tasks
         while let Some(result) = join_set.try_join_next() {
             match result {
-                Ok((index, updated_manager)) => {
-                    if index < managers.len() {
-                        managers[index] = updated_manager;
-                    }
+                Ok(_index) => {
+                    // Task completed - manager state was updated via shared reference
                 }
                 Err(join_error) => {
                     // Log join errors but continue - individual manager failures are handled in the workflow
@@ -78,16 +84,26 @@ pub async fn run_tui(
         // Check if all managers are done
         let all_done = if selective {
             // In selective mode, only check started workflows
-            managers
+            shared_managers
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| started_workflows[*i])
-                .all(|(_, m)| matches!(m.status, ManagerStatus::Success | ManagerStatus::Failed(_)))
+                .all(|(_, m)| {
+                    let manager = m.lock().unwrap();
+                    matches!(
+                        manager.status,
+                        ManagerStatus::Success | ManagerStatus::Failed(_)
+                    )
+                })
         } else {
             // In non-selective mode, check all managers
-            managers
-                .iter()
-                .all(|m| matches!(m.status, ManagerStatus::Success | ManagerStatus::Failed(_)))
+            shared_managers.iter().all(|m| {
+                let manager = m.lock().unwrap();
+                matches!(
+                    manager.status,
+                    ManagerStatus::Success | ManagerStatus::Failed(_)
+                )
+            })
         };
 
         // Handle input
@@ -97,12 +113,12 @@ pub async fn run_tui(
                     match (&app_state, key.code) {
                         // Global quit commands
                         (_, KeyCode::Char('q')) => break,
-                        (AppState::DetailView(_), KeyCode::Esc) => {
+                        (AppState::DetailView(_) | AppState::LogsView(_), KeyCode::Esc) => {
                             app_state = AppState::ManagerList;
                         }
                         // Manager list navigation
                         (AppState::ManagerList, KeyCode::Down | KeyCode::Char('j')) => {
-                            if selected < managers.len() - 1 {
+                            if selected < shared_managers.len() - 1 {
                                 selected += 1;
                                 list_state.select(Some(selected));
                             }
@@ -118,18 +134,24 @@ pub async fn run_tui(
                         }
                         // Selective mode: start workflow for selected manager
                         (AppState::ManagerList, KeyCode::Char(' ')) if selective => {
-                            if selected < managers.len() && !started_workflows[selected] {
-                                let mut manager = managers[selected].clone();
+                            if selected < shared_managers.len() && !started_workflows[selected] {
+                                let manager_ref = shared_managers[selected].clone();
                                 let index = selected;
                                 started_workflows[selected] = true;
                                 join_set.spawn(async move {
-                                    let _ = execute_manager_workflow(&mut manager).await;
-                                    (index, manager)
+                                    let _ = execute_manager_workflow(manager_ref).await;
+                                    index
                                 });
                             }
                         }
                         // Detail view navigation
-                        (AppState::DetailView(_), KeyCode::Char('h') | KeyCode::Left) => {
+                        (AppState::DetailView(manager_index), KeyCode::Char('l')) => {
+                            app_state = AppState::LogsView(*manager_index);
+                        }
+                        (
+                            AppState::DetailView(_) | AppState::LogsView(_),
+                            KeyCode::Char('h') | KeyCode::Left,
+                        ) => {
                             app_state = AppState::ManagerList;
                         }
                         _ => {}
@@ -157,25 +179,38 @@ pub async fn run_tui(
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
-    print_summary(&managers);
+    // Convert shared managers back to regular managers for summary
+    let final_managers: Vec<DetectedManager> = shared_managers
+        .iter()
+        .map(|m| m.lock().unwrap().clone())
+        .collect();
+
+    print_summary(&final_managers);
 
     Ok(())
 }
 
 fn ui(
     f: &mut Frame,
-    managers: &[DetectedManager],
+    shared_managers: &[Arc<Mutex<DetectedManager>>],
     list_state: &mut ListState,
     app_state: &AppState,
     selective: bool,
 ) {
     match app_state {
         AppState::ManagerList => {
-            render_manager_list(f, managers, list_state, selective);
+            render_manager_list(f, shared_managers, list_state, selective);
         }
         AppState::DetailView(manager_index) => {
-            if let Some(manager) = managers.get(*manager_index) {
-                render_detail_view(f, manager);
+            if let Some(manager_ref) = shared_managers.get(*manager_index) {
+                let manager = manager_ref.lock().unwrap();
+                render_detail_view(f, &manager);
+            }
+        }
+        AppState::LogsView(manager_index) => {
+            if let Some(manager_ref) = shared_managers.get(*manager_index) {
+                let manager = manager_ref.lock().unwrap();
+                render_logs_view(f, &manager);
             }
         }
     }
@@ -183,7 +218,7 @@ fn ui(
 
 fn render_manager_list(
     f: &mut Frame,
-    managers: &[DetectedManager],
+    shared_managers: &[Arc<Mutex<DetectedManager>>],
     list_state: &mut ListState,
     selective: bool,
 ) {
@@ -193,9 +228,11 @@ fn render_manager_list(
         .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
         .split(f.size());
 
-    let items: Vec<ListItem> = managers
+    let items: Vec<ListItem> = shared_managers
         .iter()
-        .map(|manager| {
+        .map(|manager_ref| {
+            let manager = manager_ref.lock().unwrap();
+
             let status_style = match manager.status {
                 ManagerStatus::Success => Style::default().fg(Color::Green),
                 ManagerStatus::Failed(_) => Style::default().fg(Color::Red),
@@ -305,6 +342,67 @@ fn render_detail_view(f: &mut Frame, manager: &DetectedManager) {
     f.render_widget(status_block, chunks[1]);
 
     // Help text for detail view
+    let help_text = Paragraph::new("Back: Esc/h/← | Logs: l | Quit: q")
+        .block(Block::default().borders(Borders::ALL).title("Help"))
+        .style(Style::default().fg(Color::Cyan));
+
+    f.render_widget(help_text, chunks[2]);
+}
+
+fn render_logs_view(f: &mut Frame, manager: &DetectedManager) {
+    let area = f.size().inner(&Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            [
+                Constraint::Length(3),
+                Constraint::Min(0),
+                Constraint::Length(3),
+            ]
+            .as_ref(),
+        )
+        .split(area);
+
+    // Title block
+    let title_text = format!("{} - Live Logs", manager.name);
+    let title_block = Paragraph::new(title_text)
+        .block(Block::default().borders(Borders::ALL).title("Logs"))
+        .style(Style::default().fg(Color::Cyan));
+
+    f.render_widget(title_block, chunks[0]);
+
+    // Logs content
+    let logs_text = match &manager.status {
+        ManagerStatus::Running(operation, logs) => {
+            if logs.is_empty() {
+                format!("Running {}...\n\nNo output yet.", operation)
+            } else {
+                format!("Running {}:\n\n{}", operation, logs)
+            }
+        }
+        ManagerStatus::Success => "✓ All operations completed successfully".to_string(),
+        ManagerStatus::Failed(err) => format!("✗ Failed: {}", err),
+        ManagerStatus::Pending => "Waiting to start...".to_string(),
+    };
+
+    let status_color = match manager.status {
+        ManagerStatus::Success => Color::Green,
+        ManagerStatus::Failed(_) => Color::Red,
+        _ => Color::Yellow,
+    };
+
+    let logs_block = Paragraph::new(Text::from(logs_text))
+        .block(Block::default().borders(Borders::ALL))
+        .style(Style::default().fg(status_color))
+        .wrap(Wrap { trim: true });
+
+    f.render_widget(logs_block, chunks[1]);
+
+    // Help text for logs view
     let help_text = Paragraph::new("Back: Esc/h/← | Quit: q")
         .block(Block::default().borders(Borders::ALL).title("Help"))
         .style(Style::default().fg(Color::Cyan));
