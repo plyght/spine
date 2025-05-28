@@ -45,10 +45,6 @@ command -v jq >/dev/null 2>&1 || {
     exit 1
 }
 
-command -v curl >/dev/null 2>&1 || {
-    print_error "curl is not installed. Please install it first."
-    exit 1
-}
 
 # Check if user is authenticated with GitHub CLI
 if ! gh auth status >/dev/null 2>&1; then
@@ -69,99 +65,6 @@ if [[ "$VIEWER_PERMISSION" != "ADMIN" && "$VIEWER_PERMISSION" != "WRITE" ]]; the
     exit 1
 fi
 
-# Function to generate AI-powered release notes
-generate_ai_release_notes() {
-    local version="$1"
-    
-    # Check if OpenAI API key is available
-    if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-        print_warning "OPENAI_API_KEY not set. Falling back to GitHub's auto-generated notes."
-        return 1
-    fi
-    
-    # Get the latest tag (excluding the current one we're about to create)
-    local last_tag
-    last_tag=$(git tag --sort=-version:refname | grep -Fxv "${version}" | head -n1 2>/dev/null || echo "")
-    
-    # Get commit log since last tag or from beginning if no previous tag
-    local git_log
-    if [[ -n "$last_tag" ]]; then
-        git_log=$(git log --oneline --no-merges "${last_tag}..HEAD" 2>/dev/null || echo "")
-    else
-        git_log=$(git log --oneline --no-merges 2>/dev/null || echo "")
-    fi
-    
-    # If no commits, return early
-    if [[ -z "$git_log" ]]; then
-        print_warning "No commits found for release notes. Using GitHub's auto-generated notes."
-        return 1
-    fi
-    
-    # Get repository info for context
-    local repo_name
-    repo_name=$(gh repo view --json name -q '.name' 2>/dev/null || echo "Unknown")
-    
-    # Prepare the prompt for OpenAI
-    local prompt
-    read -r -d '' prompt <<EOF
-Generate professional release notes for version ${version} of the ${repo_name} project.
-
-Based on these git commits:
-${git_log}
-
-Please create release notes that:
-1. Start with a brief summary of what's new in this release
-2. Group changes into categories like: New Features, Bug Fixes, Improvements, etc.
-3. Use clear, user-friendly language
-4. Highlight the most important changes
-5. Keep it concise but informative
-6. Format in markdown
-
-Do not include commit hashes or technical implementation details.
-EOF
-    
-    # Call OpenAI API
-    local response
-    response=$(curl --fail --silent --show-error --retry 3 -w "\n%{http_code}" \
-        -H "Authorization: Bearer ${OPENAI_API_KEY}" \
-        -H "Content-Type: application/json" \
-        -d "{
-            \"model\": \"o4-mini-2025-04-16\",
-            \"messages\": [
-                {
-                    \"role\": \"user\",
-                    \"content\": $(printf '%s' "$prompt" | jq -R -s .)
-                }
-            ],
-            \"max_completion_tokens\": 1000
-        }" \
-        "https://api.openai.com/v1/chat/completions")
-    
-    # Extract HTTP status code and response body
-    local http_code
-    http_code=$(echo "$response" | tail -n1)
-    local response_body
-    response_body=$(echo "$response" | sed '$d')
-    
-    # Check if API call was successful
-    if [[ "$http_code" -ne 200 ]]; then
-        print_warning "OpenAI API call failed (HTTP $http_code). Falling back to GitHub's auto-generated notes."
-        return 1
-    fi
-    
-    # Extract the content from the response
-    local release_notes
-    release_notes=$(echo "$response_body" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
-    
-    if [[ -z "$release_notes" ]]; then
-        print_warning "Failed to parse OpenAI response. Falling back to GitHub's auto-generated notes."
-        return 1
-    fi
-    
-    # Output the release notes to stdout
-    printf '%s' "$release_notes"
-    return 0
-}
 
 print_status "Starting release process for version $VERSION"
 
@@ -183,16 +86,80 @@ if [[ "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "master" ]]; then
     fi
 fi
 
-# Build the project
-print_status "Building release binary..."
-cargo build --release
+# Build for current platform only to avoid cross-compilation issues
+CURRENT_TARGET=$(rustc -vV | grep host | cut -d' ' -f2)
+TARGETS=("$CURRENT_TARGET")
 
-# Check if binary exists
-BINARY_PATH="target/release/spn"
-if [ ! -f "$BINARY_PATH" ]; then
-    print_error "Binary not found at $BINARY_PATH"
+# Array to store built binaries
+BUILT_BINARIES=()
+
+# Build for multiple targets
+print_status "Building release binaries for multiple platforms..."
+
+for target in "${TARGETS[@]}"; do
+    print_status "Building for target: $target"
+    
+    # Install target if not already installed
+    if ! rustup target list --installed | grep -q "$target"; then
+        print_status "Installing target $target..."
+        rustup target add "$target"
+    fi
+    
+    # Build for target
+    if cargo build --release --target "$target"; then
+        binary_path="target/$target/release/spn"
+        if [ -f "$binary_path" ]; then
+            # Create target-specific binary name
+            case "$target" in
+                "x86_64-unknown-linux-gnu")
+                    binary_name="spn-linux-x64"
+                    ;;
+                "aarch64-unknown-linux-gnu")
+                    binary_name="spn-linux-arm64"
+                    ;;
+                "x86_64-apple-darwin")
+                    binary_name="spn-macos-x64"
+                    ;;
+                "aarch64-apple-darwin")
+                    binary_name="spn-macos-arm64"
+                    ;;
+                *)
+                    # Use current platform detection for unknown targets
+                    if [[ "$OSTYPE" == "darwin"* ]]; then
+                        if [[ "$(uname -m)" == "arm64" ]]; then
+                            binary_name="spn-macos-arm64"
+                        else
+                            binary_name="spn-macos-x64"
+                        fi
+                    else
+                        if [[ "$(uname -m)" == "aarch64" ]]; then
+                            binary_name="spn-linux-arm64"
+                        else
+                            binary_name="spn-linux-x64"
+                        fi
+                    fi
+                    ;;
+            esac
+            
+            # Copy binary with target-specific name
+            cp "$binary_path" "target/$binary_name"
+            BUILT_BINARIES+=("target/$binary_name#$binary_name")
+            print_status "Successfully built $binary_name"
+        else
+            print_warning "Binary not found for target $target, skipping..."
+        fi
+    else
+        print_warning "Failed to build for target $target, skipping..."
+    fi
+done
+
+# Check if at least one binary was built
+if [ ${#BUILT_BINARIES[@]} -eq 0 ]; then
+    print_error "No binaries were successfully built"
     exit 1
 fi
+
+print_status "Successfully built ${#BUILT_BINARIES[@]} binaries"
 
 # Create git tag
 print_status "Creating git tag $VERSION..."
@@ -208,28 +175,13 @@ git push origin "$VERSION"
 
 # Create GitHub release with binary
 print_status "Creating GitHub release..."
-
-# Generate AI-powered release notes
-print_status "Generating release notes..."
-RELEASE_NOTES=$(generate_ai_release_notes "$VERSION")
-if [[ $? -eq 0 && -n "$RELEASE_NOTES" ]]; then
-    print_status "Using AI-generated release notes"
-    if ! gh release create "$VERSION" \
-        --title "Release $VERSION" \
-        --notes "$RELEASE_NOTES" \
-        "$BINARY_PATH#spine-binary-$(uname -s)-$(uname -m)"; then
-        print_error "GitHub release creation failed."
-        exit 1
-    fi
-else
-    print_status "Using GitHub's auto-generated release notes"
-    if ! gh release create "$VERSION" \
-        --title "Release $VERSION" \
-        --generate-notes \
-        "$BINARY_PATH#spine-binary-$(uname -s)-$(uname -m)"; then
-        print_error "GitHub release creation failed."
-        exit 1
-    fi
+print_status "Using GitHub's auto-generated release notes"
+if ! gh release create "$VERSION" \
+    --title "Release $VERSION" \
+    --generate-notes \
+    "${BUILT_BINARIES[@]}"; then
+    print_error "GitHub release creation failed."
+    exit 1
 fi
 
 print_status "Release $VERSION created successfully!"
