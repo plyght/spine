@@ -727,7 +727,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "spine"
+name = "spine-pkgman"
 version = "0.1.0"
 dependencies = [
  "anyhow",
