@@ -284,7 +284,7 @@ fn render_manager_list(
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
-        .split(f.size());
+        .split(f.area());
 
     let items: Vec<ListItem> = shared_managers
         .iter()
@@ -334,7 +334,7 @@ fn render_manager_list(
 }
 
 fn render_detail_view(f: &mut Frame, manager: &DetectedManager) {
-    let area = f.size().inner(&Margin {
+    let area = f.area().inner(Margin {
         horizontal: 2,
         vertical: 1,
     });
@@ -404,7 +404,7 @@ fn render_detail_view(f: &mut Frame, manager: &DetectedManager) {
 }
 
 fn render_logs_view(f: &mut Frame, manager: &DetectedManager, scroll_state: &LogsViewState) {
-    let area = f.size().inner(&Margin {
+    let area = f.area().inner(Margin {
         horizontal: 2,
         vertical: 1,
     });
