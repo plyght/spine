@@ -430,16 +430,16 @@ EOF
         -H "Content-Type: application/json" \
         -d "{
             \"model\": \"o4-mini-2025-04-16\",
-            \"messages\": [
+            \"input\": [
                 {
                     \"role\": \"user\",
                     \"content\": $(printf '%s' "$prompt" | jq -R -s .)
                 }
             ],
             \"tools\": $tools,
-            \"max_tokens\": 1000
+            \"max_completion_tokens\": 1000
         }" \
-        "https://api.openai.com/v1/chat/completions")
+        "https://api.openai.com/v1/responses")
     
     # Extract HTTP status code and response body
     local http_code
@@ -455,12 +455,12 @@ EOF
     
     # Check if model wants to call functions
     local tool_calls
-    tool_calls=$(echo "$response_body" | jq -r '.choices[0].message.tool_calls // empty' 2>/dev/null)
+    tool_calls=$(echo "$response_body" | jq -r '.output[0].tool_calls // empty' 2>/dev/null)
     
     if [[ -n "$tool_calls" && "$tool_calls" != "null" ]]; then
         # Build messages array with function results
         local messages
-        messages='[{"role": "user", "content": '$(printf '%s' "$prompt" | jq -R -s .)'}, {"role": "assistant", "tool_calls": '$(echo "$response_body" | jq -r '.choices[0].message.tool_calls')'}'
+        messages='[{"role": "user", "content": '$(printf '%s' "$prompt" | jq -R -s .)'}, {"type": "function_call", "tool_calls": '$(echo "$response_body" | jq -r '.output[0].tool_calls')'}'
         
         # Execute each function call
         local function_results=()
@@ -488,7 +488,7 @@ EOF
             local escaped_result
             escaped_result=$(printf '%s' "$result" | jq -R -s .)
             
-            function_results+=('{"tool_call_id": "'$call_id'", "role": "tool", "content": '$escaped_result'}')
+            function_results+=('{"type": "function_call_output", "call_id": "'$call_id'", "output": '$escaped_result'}')
         done < <(echo "$tool_calls" | jq -c '.[]')
         
         # Add function results to messages
@@ -504,11 +504,11 @@ EOF
             -H "Content-Type: application/json" \
             -d "{
                 \"model\": \"o4-mini-2025-04-16\",
-                \"messages\": $messages,
+                \"input\": $messages,
                 \"tools\": $tools,
-                \"max_tokens\": 1000
+                \"max_completion_tokens\": 1000
             }" \
-            "https://api.openai.com/v1/chat/completions")
+            "https://api.openai.com/v1/responses")
         
         local final_http_code
         final_http_code=$(echo "$final_response" | tail -n1)
@@ -525,7 +525,7 @@ EOF
     
     # Extract the content from the response
     local release_notes
-    release_notes=$(echo "$response_body" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+    release_notes=$(echo "$response_body" | jq -r '.output_text // empty' 2>/dev/null)
     
     if [[ -z "$release_notes" ]]; then
         print_warning "Failed to parse OpenAI response. Falling back to GitHub's auto-generated notes."
@@ -557,13 +557,18 @@ if [[ "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "master" ]]; then
     fi
 fi
 
-# Define target platforms
-TARGETS=(
-    "x86_64-unknown-linux-gnu"
-    "aarch64-unknown-linux-gnu"
-    "x86_64-apple-darwin"
-    "aarch64-apple-darwin"
-)
+# Define target platforms based on current OS
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    TARGETS=(
+        "x86_64-apple-darwin"
+        "aarch64-apple-darwin"
+    )
+else
+    TARGETS=(
+        "x86_64-unknown-linux-gnu"
+        "aarch64-unknown-linux-gnu"
+    )
+fi
 
 # Array to store built binaries
 BUILT_BINARIES=()
