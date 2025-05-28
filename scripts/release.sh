@@ -141,7 +141,7 @@ EOF
     local http_code
     http_code=$(echo "$response" | tail -n1)
     local response_body
-    response_body=$(echo "$response" | head -n -1)
+    response_body=$(echo "$response" | sed '$d')
     
     # Check if API call was successful
     if [[ "$http_code" -ne 200 ]]; then
