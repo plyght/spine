@@ -7,6 +7,6 @@
   },
   "scripts": {
     "prepare": "husky",
-    "release": "./scripts/release.sh"
+    "release": "bash ./scripts/release.sh"
   }
 }

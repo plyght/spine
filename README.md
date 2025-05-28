@@ -1,6 +1,6 @@
 # Spine
 
-The backbone of your package management ecosystem. Automatically detects and updates all installed package managers in parallel across *nix systems.
+The backbone of your package management ecosystem. Automatically detects and updates all installed package managers in parallel across \*nix systems.
 
 ## Overview
 
@@ -62,7 +62,7 @@ Configuration is searched in: current directory → binary directory → `/etc/s
 
 - `config.rs`: Configuration loading and parsing
 - `detect.rs`: Package manager discovery
-- `execute.rs`: Command execution with timeout/sudo handling  
+- `execute.rs`: Command execution with timeout/sudo handling
 - `tui.rs`: Terminal interface using Ratatui
 - `main.rs`: CLI orchestration
 
