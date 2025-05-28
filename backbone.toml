@@ -54,8 +54,8 @@ requires_sudo = true
 name = "Portage"
 check_command = "emerge --version"
 refresh = "emerge --sync"
-upgrade_all = "emerge --ask -uDN @world"
-cleanup = "emerge --ask --depclean"
+upgrade_all = "emerge -uDN @world"
+cleanup = "emerge --depclean"
 requires_sudo = true
 
 [managers.nix]
@@ -70,7 +70,7 @@ requires_sudo = false
 [managers.snap]
 name = "Snap"
 check_command = "snap version"
-refresh = "snap refresh --list"
+refresh = "snap refresh"
 upgrade_all = "snap refresh"
 requires_sudo = true
 
@@ -143,7 +143,7 @@ requires_sudo = false
 [managers.pip]
 name = "pip"
 check_command = "pip --version"
-refresh = "pip list --outdated"
+refresh = "pip index versions pip"
 self_update = "python -m pip install --upgrade pip"
 upgrade_all = "python -m pip install --upgrade pip setuptools wheel"
 requires_sudo = false
@@ -151,7 +151,7 @@ requires_sudo = false
 [managers.pip3]
 name = "pip3"
 check_command = "pip3 --version"
-refresh = "pip3 list --outdated"
+refresh = "pip3 index versions pip"
 self_update = "python3 -m pip install --upgrade pip"
 upgrade_all = "python3 -m pip install --upgrade pip setuptools wheel"
 requires_sudo = false
@@ -167,14 +167,14 @@ requires_sudo = false
 [managers.cargo]
 name = "Cargo"
 check_command = "cargo --version"
-refresh = "cargo install-update --list"
-upgrade_all = "cargo install-update -a"
+refresh = "cargo search --limit 0"
+upgrade_all = "cargo update"
 requires_sudo = false
 
 [managers.composer]
 name = "Composer"
 check_command = "composer --version"
-refresh = "composer diagnose"
+refresh = "composer outdated"
 self_update = "composer self-update"
 upgrade_all = "composer global update"
 requires_sudo = false
@@ -198,7 +198,7 @@ requires_sudo = false
 [managers.conda]
 name = "Conda"
 check_command = "conda --version"
-refresh = "conda update --all"
+refresh = "conda list --outdated"
 self_update = "conda update conda"
 upgrade_all = "conda update --all"
 cleanup = "conda clean --all"
