@@ -79,9 +79,12 @@ execute_function_call() {
             local repo_name
             repo_name=$(echo "$arguments" | jq -r '.repository_name // ""')
             if [[ -n "$repo_name" ]]; then
+                # URL-encode the repository name
+                local encoded_repo_name
+                encoded_repo_name=$(printf '%s' "$repo_name" | jq -sRr @uri)
                 # Search for repository information online
                 local search_results
-                search_results=$(curl -s "https://api.github.com/search/repositories?q=${repo_name}&sort=stars&order=desc" | jq -r '.items[0] | select(.name) | "Description: " + (.description // "No description") + "\nLanguage: " + (.language // "Unknown") + "\nStars: " + (.stargazers_count | tostring) + "\nTopics: " + (.topics | join(", "))' 2>/dev/null || echo "Repository information not found")
+                search_results=$(curl -s "https://api.github.com/search/repositories?q=${encoded_repo_name}&sort=stars&order=desc" | jq -r '.items[0] | select(.name) | "Description: " + (.description // "No description") + "\nLanguage: " + (.language // "Unknown") + "\nStars: " + (.stargazers_count | tostring) + "\nTopics: " + (.topics | join(", "))' 2>/dev/null || echo "Repository information not found")
                 echo "$search_results"
             else
                 echo "Repository name not provided"
@@ -105,7 +108,7 @@ execute_function_call() {
         "get_project_structure")
             local depth
             depth=$(echo "$arguments" | jq -r '.depth // 2')
-            find . -type f -name "*.rs" -o -name "*.toml" -o -name "*.md" -o -name "*.json" -o -name "*.yaml" -o -name "*.yml" | grep -v "target/" | grep -v "node_modules/" | head -30 | sort 2>/dev/null || echo "Could not read project structure"
+            find . -maxdepth "$depth" -type f -name "*.rs" -o -name "*.toml" -o -name "*.md" -o -name "*.json" -o -name "*.yaml" -o -name "*.yml" | grep -v "target/" | grep -v "node_modules/" | head -n "$((depth * 15))" | sort 2>/dev/null || echo "Could not read project structure"
             ;;
         "get_git_changes")
             local last_tag
@@ -219,7 +222,7 @@ generate_ai_release_notes() {
     
     # Prepare the prompt for OpenAI
     local prompt
-    read -r -d '' prompt <<EOF
+    prompt=$(cat <<'EOF'
 You are tasked with generating professional release notes for ${repo_name} ${version}.
 
 Previous tag: ${last_tag:-"(no previous releases)"}
@@ -265,10 +268,11 @@ Brief summary highlighting the most important changes.
 
 Remember: Call the functions first to understand the project and avoid repetition!
 EOF
+)
     
     # Define tools for function calling
     local tools
-    read -r -d '' tools <<'EOF'
+    tools=$(cat <<'EOF'
 [
     {
         "type": "function",
@@ -285,8 +289,7 @@ EOF
                 },
                 "required": ["repository_name"],
                 "additionalProperties": false
-            },
-            "strict": true
+            }
         }
     },
     {
@@ -298,8 +301,7 @@ EOF
                 "type": "object",
                 "properties": {},
                 "additionalProperties": false
-            },
-            "strict": true
+            }
         }
     },
     {
@@ -311,8 +313,7 @@ EOF
                 "type": "object",
                 "properties": {},
                 "additionalProperties": false
-            },
-            "strict": true
+            }
         }
     },
     {
@@ -329,8 +330,7 @@ EOF
                     }
                 },
                 "additionalProperties": false
-            },
-            "strict": true
+            }
         }
     },
     {
@@ -347,8 +347,7 @@ EOF
                     }
                 },
                 "additionalProperties": false
-            },
-            "strict": true
+            }
         }
     },
     {
@@ -363,13 +362,13 @@ EOF
                         "type": ["string", "null"],
                         "description": "Git tag to compare from (optional, uses recent commits if not provided)"
                     }
-                },
+                }
                 "required": ["since_tag"],
                 "additionalProperties": false
-            },
-            "strict": true
+            }
+            
         }
-    },
+    }
     {
         "type": "function",
         "function": {
@@ -384,8 +383,7 @@ EOF
                     }
                 },
                 "additionalProperties": false
-            },
-            "strict": true
+            }
         }
     },
     {
@@ -400,13 +398,13 @@ EOF
                         "type": ["string", "null"],
                         "description": "Git tag to analyze from (optional, uses recent commits if not provided)"
                     }
-                },
+                }
                 "required": ["since_tag"],
                 "additionalProperties": false
-            },
-            "strict": true
+            }
+            
         }
-    },
+    }
     {
         "type": "function",
         "function": {
@@ -416,12 +414,12 @@ EOF
                 "type": "object",
                 "properties": {},
                 "additionalProperties": false
-            },
-            "strict": true
+            }
         }
     }
 ]
 EOF
+)
 
     # Initial API call with tools
     local response
@@ -453,24 +451,48 @@ EOF
         return 1
     fi
     
-    # Check if model wants to call functions
-    local tool_calls
+    # Check if model wants to call functions (handle both old function_call and new tool_calls format)
+    local tool_calls function_call
     tool_calls=$(echo "$response_body" | jq -r '.output[0].tool_calls // empty' 2>/dev/null)
+    function_call=$(echo "$response_body" | jq -r '.output[0].function_call // empty' 2>/dev/null)
     
-    if [[ -n "$tool_calls" && "$tool_calls" != "null" ]]; then
-        # Build messages array with function results
+    if [[ -n "$tool_calls" && "$tool_calls" != "null" ]] || [[ -n "$function_call" && "$function_call" != "null" ]]; then
+        # Build messages array with function results using jq for proper JSON construction
+        local initial_message function_message
+        initial_message=$(printf '%s' "$prompt" | jq -Rs '{"role": "user", "content": .}')
+        
+        if [[ -n "$tool_calls" && "$tool_calls" != "null" ]]; then
+            function_message=$(echo "$response_body" | jq -r '.output[0] | {"type": "function_call", "tool_calls": .tool_calls}')
+        else
+            function_message=$(echo "$response_body" | jq -r '.output[0] | {"type": "function_call", "function_call": .function_call}')
+        fi
+        
         local messages
-        messages='[{"role": "user", "content": '$(printf '%s' "$prompt" | jq -R -s .)'}, {"type": "function_call", "tool_calls": '$(echo "$response_body" | jq -r '.output[0].tool_calls')'}'
+        messages=$(jq -n --argjson init "$initial_message" --argjson func "$function_message" '[$init, $func]')
         
         # Execute each function call
         local function_results=()
+        local calls_to_process
+        
+        if [[ -n "$tool_calls" && "$tool_calls" != "null" ]]; then
+            calls_to_process="$tool_calls"
+        else
+            calls_to_process="[$function_call]"
+        fi
+        
         while IFS= read -r tool_call; do
-            local function_name
-            local arguments
-            local call_id
-            function_name=$(echo "$tool_call" | jq -r '.function.name')
-            arguments=$(echo "$tool_call" | jq -r '.function.arguments')
-            call_id=$(echo "$tool_call" | jq -r '.id')
+            local function_name arguments call_id
+            
+            # Handle both tool_calls and function_call formats
+            if [[ -n "$tool_calls" && "$tool_calls" != "null" ]]; then
+                function_name=$(echo "$tool_call" | jq -r '.function.name')
+                arguments=$(echo "$tool_call" | jq -r '.function.arguments')
+                call_id=$(echo "$tool_call" | jq -r '.id')
+            else
+                function_name=$(echo "$tool_call" | jq -r '.name')
+                arguments=$(echo "$tool_call" | jq -r '.arguments')
+                call_id="call_$(date +%s)"
+            fi
             
             # Auto-inject last_tag for functions that need it
             if [[ "$function_name" == "get_git_changes" || "$function_name" == "analyze_commit_types" ]]; then
@@ -484,30 +506,28 @@ EOF
             local result
             result=$(execute_function_call "$function_name" "$arguments")
             
-            # Properly escape the result for JSON
-            local escaped_result
-            escaped_result=$(printf '%s' "$result" | jq -R -s .)
-            
-            function_results+=('{"type": "function_call_output", "call_id": "'$call_id'", "output": '$escaped_result'}')
-        done < <(echo "$tool_calls" | jq -c '.[]')
+            # Create function result using jq for proper JSON construction
+            local function_result
+            function_result=$(jq -n --arg id "$call_id" --arg output "$result" '{"type": "function_call_output", "call_id": $id, "output": $output}')
+            function_results+=("$function_result")
+        done < <(echo "$calls_to_process" | jq -c '.[]')
         
-        # Add function results to messages
-        for result in "${function_results[@]}"; do
-            messages+=', '$result
-        done
-        messages+=']'
+        # Build final messages array with jq
+        local results_json
+        results_json=$(printf '%s\n' "${function_results[@]}" | jq -s '.')
+        messages=$(echo "$messages" | jq --argjson results "$results_json" '. + $results')
         
         # Make second API call with function results
         local final_response
         final_response=$(curl --fail --silent --show-error --retry 3 -w "\n%{http_code}" \
             -H "Authorization: Bearer ${OPENAI_API_KEY}" \
             -H "Content-Type: application/json" \
-            -d "{
-                \"model\": \"o4-mini-2025-04-16\",
-                \"input\": $messages,
-                \"tools\": $tools,
-                \"max_completion_tokens\": 1000
-            }" \
+            -d "$(jq -n --argjson msgs "$messages" --argjson tools_def "$tools" '{
+                "model": "o4-mini-2025-04-16",
+                "input": $msgs,
+                "tools": $tools_def,
+                "max_completion_tokens": 1000
+            }')" \
             "https://api.openai.com/v1/responses")
         
         local final_http_code
