@@ -1,5 +1,5 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
 # Colors for output
 RED='\033[0;31m'
@@ -31,6 +31,23 @@ VERSION=$1
 # Validate version format (should start with 'v')
 if [[ ! $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
     print_error "Version should be in format 'v1.0.0' or 'v1.0.0-beta.1'"
+    exit 1
+fi
+
+# Check for required dependencies
+command -v gh >/dev/null 2>&1 || {
+    print_error "gh (GitHub CLI) is not installed. Please install it first: https://cli.github.com/"
+    exit 1
+}
+
+command -v jq >/dev/null 2>&1 || {
+    print_error "jq is not installed. Please install it first."
+    exit 1
+}
+
+# Check if user is authenticated with GitHub CLI
+if ! gh auth status >/dev/null 2>&1; then
+    print_error "GitHub CLI is not authenticated. Please run 'gh auth login' first."
     exit 1
 fi
 
