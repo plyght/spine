@@ -272,154 +272,7 @@ EOF
     
     # Define tools for function calling
     local tools
-    tools=$(cat <<'EOF'
-[
-    {
-        "type": "function",
-        "function": {
-            "name": "search_repository_info",
-            "description": "Search for information about a repository online to understand its purpose and context",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repository_name": {
-                        "type": "string",
-                        "description": "The name of the repository to search for"
-                    }
-                },
-                "required": ["repository_name"],
-                "additionalProperties": false
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_readme_content",
-            "description": "Get the content of the README.md file to understand the project",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_repository_description",
-            "description": "Get the GitHub repository description, topics, and language information",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_previous_releases",
-            "description": "Get previous release notes to avoid repeating content and understand release history",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "number",
-                        "description": "Number of previous releases to fetch (default: 5)"
-                    }
-                },
-                "additionalProperties": false
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_project_structure",
-            "description": "Get the project file structure to understand codebase organization",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "depth": {
-                        "type": "number",
-                        "description": "Directory depth to explore (default: 2)"
-                    }
-                },
-                "additionalProperties": false
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_git_changes",
-            "description": "Get actual file changes statistics since last tag or recent commits",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "since_tag": {
-                        "type": ["string", "null"],
-                        "description": "Git tag to compare from (optional, uses recent commits if not provided)"
-                    }
-                }
-                "required": ["since_tag"],
-                "additionalProperties": false
-            }
-            
-        }
-    }
-    {
-        "type": "function",
-        "function": {
-            "name": "get_recent_activity",
-            "description": "Get recent GitHub issues and pull requests for development context",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "days": {
-                        "type": "number",
-                        "description": "Number of days back to look for activity (default: 30)"
-                    }
-                },
-                "additionalProperties": false
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "analyze_commit_types",
-            "description": "Analyze commit messages to categorize changes by type (features, fixes, etc.)",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "since_tag": {
-                        "type": ["string", "null"],
-                        "description": "Git tag to analyze from (optional, uses recent commits if not provided)"
-                    }
-                }
-                "required": ["since_tag"],
-                "additionalProperties": false
-            }
-            
-        }
-    }
-    {
-        "type": "function",
-        "function": {
-            "name": "get_main_source_overview",
-            "description": "Get an overview of main source files to understand what the project does",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }
-        }
-    }
-]
-EOF
-)
+    tools=$(cat /tmp/tools.json)
 
     # Initial API call with tools
     local response
@@ -451,48 +304,31 @@ EOF
         return 1
     fi
     
-    # Check if model wants to call functions (handle both old function_call and new tool_calls format)
-    local tool_calls function_call
-    tool_calls=$(echo "$response_body" | jq -r '.output[0].tool_calls // empty' 2>/dev/null)
-    function_call=$(echo "$response_body" | jq -r '.output[0].function_call // empty' 2>/dev/null)
+    # Check if model wants to call functions
+    local function_calls
+    function_calls=$(echo "$response_body" | jq -r '.output // empty' 2>/dev/null)
     
-    if [[ -n "$tool_calls" && "$tool_calls" != "null" ]] || [[ -n "$function_call" && "$function_call" != "null" ]]; then
-        # Build messages array with function results using jq for proper JSON construction
-        local initial_message function_message
-        initial_message=$(printf '%s' "$prompt" | jq -Rs '{"role": "user", "content": .}')
+    # Check if any output items are function calls
+    local has_function_calls
+    has_function_calls=$(echo "$function_calls" | jq -r 'map(select(.type == "function_call")) | length > 0' 2>/dev/null)
+    
+    if [[ "$has_function_calls" == "true" ]]; then
+        # Build initial input messages array  
+        local input_messages
+        input_messages=$(jq -n --arg content "$prompt" '[{"role": "user", "content": $content}]')
         
-        if [[ -n "$tool_calls" && "$tool_calls" != "null" ]]; then
-            function_message=$(echo "$response_body" | jq -r '.output[0] | {"type": "function_call", "tool_calls": .tool_calls}')
-        else
-            function_message=$(echo "$response_body" | jq -r '.output[0] | {"type": "function_call", "function_call": .function_call}')
-        fi
+        # Append the function calls from the model's response
+        local function_call_items
+        function_call_items=$(echo "$function_calls" | jq -c 'map(select(.type == "function_call"))')
+        input_messages=$(echo "$input_messages" | jq --argjson calls "$function_call_items" '. + $calls')
         
-        local messages
-        messages=$(jq -n --argjson init "$initial_message" --argjson func "$function_message" '[$init, $func]')
-        
-        # Execute each function call
-        local function_results=()
-        local calls_to_process
-        
-        if [[ -n "$tool_calls" && "$tool_calls" != "null" ]]; then
-            calls_to_process="$tool_calls"
-        else
-            calls_to_process="[$function_call]"
-        fi
-        
+        # Execute each function call and collect results
         while IFS= read -r tool_call; do
             local function_name arguments call_id
             
-            # Handle both tool_calls and function_call formats
-            if [[ -n "$tool_calls" && "$tool_calls" != "null" ]]; then
-                function_name=$(echo "$tool_call" | jq -r '.function.name')
-                arguments=$(echo "$tool_call" | jq -r '.function.arguments')
-                call_id=$(echo "$tool_call" | jq -r '.id')
-            else
-                function_name=$(echo "$tool_call" | jq -r '.name')
-                arguments=$(echo "$tool_call" | jq -r '.arguments')
-                call_id="call_$(date +%s)"
-            fi
+            function_name=$(echo "$tool_call" | jq -r '.name')
+            arguments=$(echo "$tool_call" | jq -r '.arguments')
+            call_id=$(echo "$tool_call" | jq -r '.call_id')
             
             # Auto-inject last_tag for functions that need it
             if [[ "$function_name" == "get_git_changes" || "$function_name" == "analyze_commit_types" ]]; then
@@ -506,23 +342,19 @@ EOF
             local result
             result=$(execute_function_call "$function_name" "$arguments")
             
-            # Create function result using jq for proper JSON construction
+            # Append function result to input messages
             local function_result
             function_result=$(jq -n --arg id "$call_id" --arg output "$result" '{"type": "function_call_output", "call_id": $id, "output": $output}')
-            function_results+=("$function_result")
-        done < <(echo "$calls_to_process" | jq -c '.[]')
-        
-        # Build final messages array with jq
-        local results_json
-        results_json=$(printf '%s\n' "${function_results[@]}" | jq -s '.')
-        messages=$(echo "$messages" | jq --argjson results "$results_json" '. + $results')
+            input_messages=$(echo "$input_messages" | jq --argjson result "$function_result" '. + [$result]')
+            
+        done < <(echo "$function_call_items" | jq -c '.[]')
         
         # Make second API call with function results
         local final_response
         final_response=$(curl --fail --silent --show-error --retry 3 -w "\n%{http_code}" \
             -H "Authorization: Bearer ${OPENAI_API_KEY}" \
             -H "Content-Type: application/json" \
-            -d "$(jq -n --argjson msgs "$messages" --argjson tools_def "$tools" '{
+            -d "$(jq -n --argjson msgs "$input_messages" --argjson tools_def "$tools" '{
                 "model": "o4-mini-2025-04-16",
                 "input": $msgs,
                 "tools": $tools_def,
