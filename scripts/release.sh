@@ -57,15 +57,15 @@ if ! gh auth status >/dev/null 2>&1; then
 fi
 
 # Check if user has write access to this repository
-REPO_INFO=$(gh repo view --json owner,name,permissions 2>/dev/null || echo "")
+REPO_INFO=$(gh repo view --json owner,name,viewerPermission 2>/dev/null || echo "")
 if [[ -z "$REPO_INFO" ]]; then
     print_error "Unable to determine repository information. Make sure you're in a git repository with GitHub remote."
     exit 1
 fi
 
-CAN_WRITE=$(echo "$REPO_INFO" | jq -r '.permissions.push // false')
-if [[ "$CAN_WRITE" != "true" ]]; then
-    print_error "You don't have write access to this repository. Only repository maintainers can create releases."
+VIEWER_PERMISSION=$(echo "$REPO_INFO" | jq -r '.viewerPermission // "NONE"')
+if [[ "$VIEWER_PERMISSION" != "ADMIN" && "$VIEWER_PERMISSION" != "WRITE" ]]; then
+    print_error "You don't have write access to this repository. Only repository maintainers can create releases. Current permission: $VIEWER_PERMISSION"
     exit 1
 fi
 
