@@ -25,7 +25,7 @@ cargo build --release
 sudo cp target/release/spn /usr/local/bin/
 
 # Using Cargo
-cargo install spine
+cargo install spine-pkgman
 ```
 
 ## Usage
