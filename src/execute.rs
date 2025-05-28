@@ -12,11 +12,15 @@ pub async fn execute_manager_workflow(manager_ref: Arc<Mutex<DetectedManager>>) 
         manager.config.clone()
     };
 
+    let mut accumulated_logs = String::new();
+
     // Refresh repositories
     if let Some(refresh_cmd) = &config.refresh {
+        accumulated_logs.push_str("=== REFRESHING REPOSITORIES ===\n");
         {
             let mut manager = manager_ref.lock().unwrap();
-            manager.status = ManagerStatus::Running("Refreshing".to_string(), String::new());
+            manager.status =
+                ManagerStatus::Running("Refreshing".to_string(), accumulated_logs.clone());
         }
 
         match execute_command_with_logs(
@@ -25,20 +29,27 @@ pub async fn execute_manager_workflow(manager_ref: Arc<Mutex<DetectedManager>>) 
             Duration::from_secs(300),
             manager_ref.clone(),
             "Refreshing".to_string(),
+            &mut accumulated_logs,
         )
         .await
         {
             Ok(true) => {
-                // Success - status already updated by execute_command_with_logs
+                accumulated_logs.push_str("\n✓ Refresh completed\n\n");
             }
             Ok(false) => {
                 let mut manager = manager_ref.lock().unwrap();
-                manager.status = ManagerStatus::Failed("Refresh command failed".to_string());
+                manager.status = ManagerStatus::Failed(format!(
+                    "Refresh command failed\n\nLogs:\n{}",
+                    accumulated_logs
+                ));
                 return Ok(());
             }
             Err(e) => {
                 let mut manager = manager_ref.lock().unwrap();
-                manager.status = ManagerStatus::Failed(format!("Refresh error: {}", e));
+                manager.status = ManagerStatus::Failed(format!(
+                    "Refresh error: {}\n\nLogs:\n{}",
+                    e, accumulated_logs
+                ));
                 return Ok(());
             }
         }
@@ -46,9 +57,11 @@ pub async fn execute_manager_workflow(manager_ref: Arc<Mutex<DetectedManager>>) 
 
     // Self-update
     if let Some(self_update_cmd) = &config.self_update {
+        accumulated_logs.push_str("=== SELF-UPDATE ===\n");
         {
             let mut manager = manager_ref.lock().unwrap();
-            manager.status = ManagerStatus::Running("Self-updating".to_string(), String::new());
+            manager.status =
+                ManagerStatus::Running("Self-updating".to_string(), accumulated_logs.clone());
         }
 
         match execute_command_with_logs(
@@ -57,29 +70,37 @@ pub async fn execute_manager_workflow(manager_ref: Arc<Mutex<DetectedManager>>) 
             Duration::from_secs(600),
             manager_ref.clone(),
             "Self-updating".to_string(),
+            &mut accumulated_logs,
         )
         .await
         {
             Ok(true) => {
-                // Success - status already updated by execute_command_with_logs
+                accumulated_logs.push_str("\n✓ Self-update completed\n\n");
             }
             Ok(false) => {
                 let mut manager = manager_ref.lock().unwrap();
-                manager.status = ManagerStatus::Failed("Self-update command failed".to_string());
+                manager.status = ManagerStatus::Failed(format!(
+                    "Self-update command failed\n\nLogs:\n{}",
+                    accumulated_logs
+                ));
                 return Ok(());
             }
             Err(e) => {
                 let mut manager = manager_ref.lock().unwrap();
-                manager.status = ManagerStatus::Failed(format!("Self-update error: {}", e));
+                manager.status = ManagerStatus::Failed(format!(
+                    "Self-update error: {}\n\nLogs:\n{}",
+                    e, accumulated_logs
+                ));
                 return Ok(());
             }
         }
     }
 
     // Upgrade all packages
+    accumulated_logs.push_str("=== UPGRADING PACKAGES ===\n");
     {
         let mut manager = manager_ref.lock().unwrap();
-        manager.status = ManagerStatus::Running("Upgrading".to_string(), String::new());
+        manager.status = ManagerStatus::Running("Upgrading".to_string(), accumulated_logs.clone());
     }
 
     match execute_command_with_logs(
@@ -88,29 +109,38 @@ pub async fn execute_manager_workflow(manager_ref: Arc<Mutex<DetectedManager>>) 
         Duration::from_secs(3600),
         manager_ref.clone(),
         "Upgrading".to_string(),
+        &mut accumulated_logs,
     )
     .await
     {
         Ok(true) => {
-            // Success - status already updated by execute_command_with_logs
+            accumulated_logs.push_str("\n✓ Upgrade completed\n\n");
         }
         Ok(false) => {
             let mut manager = manager_ref.lock().unwrap();
-            manager.status = ManagerStatus::Failed("Upgrade command failed".to_string());
+            manager.status = ManagerStatus::Failed(format!(
+                "Upgrade command failed\n\nLogs:\n{}",
+                accumulated_logs
+            ));
             return Ok(());
         }
         Err(e) => {
             let mut manager = manager_ref.lock().unwrap();
-            manager.status = ManagerStatus::Failed(format!("Upgrade error: {}", e));
+            manager.status = ManagerStatus::Failed(format!(
+                "Upgrade error: {}\n\nLogs:\n{}",
+                e, accumulated_logs
+            ));
             return Ok(());
         }
     }
 
     // Cleanup
     if let Some(cleanup_cmd) = &config.cleanup {
+        accumulated_logs.push_str("=== CLEANUP ===\n");
         {
             let mut manager = manager_ref.lock().unwrap();
-            manager.status = ManagerStatus::Running("Cleaning".to_string(), String::new());
+            manager.status =
+                ManagerStatus::Running("Cleaning".to_string(), accumulated_logs.clone());
         }
 
         match execute_command_with_logs(
@@ -119,28 +149,36 @@ pub async fn execute_manager_workflow(manager_ref: Arc<Mutex<DetectedManager>>) 
             Duration::from_secs(300),
             manager_ref.clone(),
             "Cleaning".to_string(),
+            &mut accumulated_logs,
         )
         .await
         {
             Ok(true) => {
-                // Success - status already updated by execute_command_with_logs
+                accumulated_logs.push_str("\n✓ Cleanup completed\n\n");
             }
             Ok(false) => {
                 let mut manager = manager_ref.lock().unwrap();
-                manager.status = ManagerStatus::Failed("Cleanup command failed".to_string());
+                manager.status = ManagerStatus::Failed(format!(
+                    "Cleanup command failed\n\nLogs:\n{}",
+                    accumulated_logs
+                ));
                 return Ok(());
             }
             Err(e) => {
                 let mut manager = manager_ref.lock().unwrap();
-                manager.status = ManagerStatus::Failed(format!("Cleanup error: {}", e));
+                manager.status = ManagerStatus::Failed(format!(
+                    "Cleanup error: {}\n\nLogs:\n{}",
+                    e, accumulated_logs
+                ));
                 return Ok(());
             }
         }
     }
 
+    // Set final success status with complete logs
     {
         let mut manager = manager_ref.lock().unwrap();
-        manager.status = ManagerStatus::Success;
+        manager.status = ManagerStatus::Success(accumulated_logs);
     }
     Ok(())
 }
@@ -163,6 +201,7 @@ async fn execute_command_with_logs(
     timeout: Duration,
     manager_ref: Arc<Mutex<DetectedManager>>,
     operation: String,
+    accumulated_logs: &mut String,
 ) -> Result<bool> {
     let mut cmd = build_command(command, requires_sudo)?;
 
@@ -180,8 +219,6 @@ async fn execute_command_with_logs(
     let mut stdout_reader = BufReader::new(stdout).lines();
     let mut stderr_reader = BufReader::new(stderr).lines();
 
-    let mut accumulated_logs = String::new();
-
     let timeout_future = tokio::time::sleep(timeout);
     tokio::pin!(timeout_future);
 
@@ -189,8 +226,9 @@ async fn execute_command_with_logs(
         tokio::select! {
             () = &mut timeout_future => {
                 let _ = child.kill().await;
+                accumulated_logs.push_str("\nERROR: Command timed out\n");
                 let mut manager = manager_ref.lock().unwrap();
-                manager.status = ManagerStatus::Failed("Command timed out".to_string());
+                manager.status = ManagerStatus::Failed(format!("Command timed out\n\nLogs:\n{}", accumulated_logs));
                 return Err(anyhow::anyhow!("Command timed out"));
             }
 
@@ -207,6 +245,7 @@ async fn execute_command_with_logs(
                         // stdout closed
                     }
                     Err(e) => {
+                        accumulated_logs.push_str(&format!("ERROR reading stdout: {}\n", e));
                         return Err(anyhow::anyhow!("Error reading stdout: {}", e));
                     }
                 }
@@ -215,7 +254,7 @@ async fn execute_command_with_logs(
             stderr_line = stderr_reader.next_line() => {
                 match stderr_line {
                     Ok(Some(line)) => {
-                        accumulated_logs.push_str("ERROR: ");
+                        accumulated_logs.push_str("STDERR: ");
                         accumulated_logs.push_str(&line);
                         accumulated_logs.push('\n');
 
@@ -226,6 +265,7 @@ async fn execute_command_with_logs(
                         // stderr closed
                     }
                     Err(e) => {
+                        accumulated_logs.push_str(&format!("ERROR reading stderr: {}\n", e));
                         return Err(anyhow::anyhow!("Error reading stderr: {}", e));
                     }
                 }
@@ -235,14 +275,13 @@ async fn execute_command_with_logs(
                 match status {
                     Ok(exit_status) => {
                         let success = exit_status.success();
-                        if success {
-                            accumulated_logs.push_str("\n✓ Command completed successfully");
-                            let mut manager = manager_ref.lock().unwrap();
-                            manager.status = ManagerStatus::Running(operation, accumulated_logs);
+                        if !success {
+                            accumulated_logs.push_str(&format!("\nCommand exited with code: {}\n", exit_status.code().unwrap_or(-1)));
                         }
                         return Ok(success);
                     }
                     Err(e) => {
+                        accumulated_logs.push_str(&format!("ERROR waiting for command: {}\n", e));
                         return Err(anyhow::anyhow!("Error waiting for command: {}", e));
                     }
                 }

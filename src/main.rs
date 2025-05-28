@@ -230,7 +230,7 @@ async fn run_manager_with_spinner(manager: &mut DetectedManager) -> Result<()> {
     let result = execute_manager_workflow_simple(manager).await;
 
     pb.finish_with_message(match &manager.status {
-        ManagerStatus::Success => format!("✓ {} completed successfully", manager.name),
+        ManagerStatus::Success(_) => format!("✓ {} completed successfully", manager.name),
         ManagerStatus::Failed(err) => format!("✗ {} failed: {}", manager.name, err),
         _ => format!("? {} finished with unknown status", manager.name),
     });
@@ -244,7 +244,7 @@ fn print_spinner_summary(managers: &[DetectedManager]) {
     let total = managers.len();
     let successful = managers
         .iter()
-        .filter(|m| matches!(m.status, ManagerStatus::Success))
+        .filter(|m| matches!(m.status, ManagerStatus::Success(_)))
         .count();
     let failed = managers
         .iter()
@@ -271,7 +271,7 @@ fn print_spinner_summary(managers: &[DetectedManager]) {
     println!("\nDetailed Results:");
     for manager in managers {
         match &manager.status {
-            ManagerStatus::Success => {
+            ManagerStatus::Success(_) => {
                 println!("  ✓ {:<20} Success", manager.name);
             }
             ManagerStatus::Failed(err) => {

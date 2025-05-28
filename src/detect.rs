@@ -12,7 +12,7 @@ pub struct DetectedManager {
 pub enum ManagerStatus {
     Pending,
     Running(String, String), // (operation_name, logs)
-    Success,
+    Success(String),         // (final_logs)
     Failed(String),
 }
 
