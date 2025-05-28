@@ -61,6 +61,13 @@ pub async fn run_tui(
     // Track which managers have started their workflows
     let mut started_workflows: Vec<bool> = vec![false; shared_managers.len()];
 
+    // Track whether user manually quit to avoid showing summary
+    #[allow(unused_assignments)]
+    let mut user_quit = false;
+
+    // Track when all operations completed for timed message display
+    let mut completion_time: Option<std::time::Instant> = None;
+
     // Start all manager workflows in parallel (only if not in selective mode)
     let mut join_set = JoinSet::new();
     if !selective {
@@ -75,17 +82,6 @@ pub async fn run_tui(
     }
 
     loop {
-        terminal.draw(|f| {
-            ui(
-                f,
-                &shared_managers,
-                &mut list_state,
-                &app_state,
-                &logs_scroll_states,
-                selective,
-            )
-        })?;
-
         // Check for completed tasks
         while let Some(result) = join_set.try_join_next() {
             match result {
@@ -125,13 +121,40 @@ pub async fn run_tui(
             })
         };
 
+        // Set completion time when all done for the first time
+        if all_done && completion_time.is_none() {
+            completion_time = Some(std::time::Instant::now());
+        }
+
+        // Check if completion message should still be shown (5 seconds)
+        let show_completion_message = if let Some(time) = completion_time {
+            time.elapsed().as_secs() < 5
+        } else {
+            false
+        };
+
+        terminal.draw(|f| {
+            ui(
+                f,
+                &shared_managers,
+                &mut list_state,
+                &app_state,
+                &logs_scroll_states,
+                selective,
+                all_done && show_completion_message,
+            )
+        })?;
+
         // Handle input
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     match (&app_state, key.code) {
                         // Global quit commands
-                        (_, KeyCode::Char('q')) => break,
+                        (_, KeyCode::Char('q')) => {
+                            user_quit = true;
+                            break;
+                        }
                         (AppState::DetailView(_) | AppState::LogsView(_), KeyCode::Esc) => {
                             app_state = AppState::ManagerList;
                         }
@@ -215,32 +238,22 @@ pub async fn run_tui(
             }
         }
 
-        // Auto-exit when all done and showing summary
-        if all_done && app_state == AppState::ManagerList {
-            // Show final state for a moment before exiting
-            if event::poll(std::time::Duration::from_millis(2000))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        break;
-                    }
-                }
-            } else {
-                break;
-            }
-        }
+        // No auto-exit - let user decide when to quit
     }
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
-    // Convert shared managers back to regular managers for summary
-    let final_managers: Vec<DetectedManager> = shared_managers
-        .iter()
-        .map(|m| m.lock().unwrap().clone())
-        .collect();
+    // Only show summary if user didn't manually quit
+    if !user_quit {
+        let final_managers: Vec<DetectedManager> = shared_managers
+            .iter()
+            .map(|m| m.lock().unwrap().clone())
+            .collect();
 
-    print_summary(&final_managers);
+        print_summary(&final_managers);
+    }
 
     Ok(())
 }
@@ -252,10 +265,17 @@ fn ui(
     app_state: &AppState,
     logs_scroll_states: &[LogsViewState],
     selective: bool,
+    show_completion_message: bool,
 ) {
     match app_state {
         AppState::ManagerList => {
-            render_manager_list(f, shared_managers, list_state, selective);
+            render_manager_list(
+                f,
+                shared_managers,
+                list_state,
+                selective,
+                show_completion_message,
+            );
         }
         AppState::DetailView(manager_index) => {
             if let Some(manager_ref) = shared_managers.get(*manager_index) {
@@ -279,12 +299,17 @@ fn render_manager_list(
     shared_managers: &[Arc<Mutex<DetectedManager>>],
     list_state: &mut ListState,
     selective: bool,
+    show_completion_message: bool,
 ) {
+    let area = f.area().inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(1)
         .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
-        .split(f.area());
+        .split(area);
 
     let items: Vec<ListItem> = shared_managers
         .iter()
@@ -321,14 +346,20 @@ fn render_manager_list(
 
     f.render_stateful_widget(list, chunks[0], list_state);
 
-    // Help text
-    let help_text = if selective {
+    // Help text or completion message
+    let help_text = if show_completion_message {
+        Paragraph::new("All operations completed! Press 'q' to quit or navigate to view details.")
+            .block(Block::default().borders(Borders::ALL).title("Status"))
+            .style(Style::default().fg(Color::Green))
+    } else if selective {
         Paragraph::new("Navigate: ↑↓/j k | Start: Space | Detail: Enter | Quit: q")
+            .block(Block::default().borders(Borders::ALL).title("Help"))
+            .style(Style::default().fg(Color::Cyan))
     } else {
         Paragraph::new("Navigate: ↑↓/j k | Detail: Enter | Quit: q")
-    }
-    .block(Block::default().borders(Borders::ALL).title("Help"))
-    .style(Style::default().fg(Color::Cyan));
+            .block(Block::default().borders(Borders::ALL).title("Help"))
+            .style(Style::default().fg(Color::Cyan))
+    };
 
     f.render_widget(help_text, chunks[1]);
 }
