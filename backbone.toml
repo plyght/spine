@@ -1,6 +1,15 @@
 # Package Manager Configuration File for Spine
 # Each section defines a package manager with its commands
 
+# Auto-update settings
+[auto_update]
+enabled = false                    # Set to true to enable automatic background updates
+schedule = "daily"                 # "daily" or "weekly" 
+time = "18:00"                     # Time to run (24h format)
+day = "monday"                     # Day for weekly updates (monday, tuesday, etc.)
+notify = true                      # Send notification when complete
+no_tui = true                      # Run without interactive TUI
+
 [managers.brew]
 name = "Homebrew"
 check_command = "brew --version"

@@ -6,13 +6,14 @@ pub struct DetectedManager {
     pub name: String,
     pub config: ManagerConfig,
     pub status: ManagerStatus,
+    pub logs: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ManagerStatus {
     Pending,
-    Running(String, String), // (operation_name, logs)
-    Success(String),         // (final_logs)
+    Running(String),
+    Success,
     Failed(String),
 }
 
@@ -25,9 +26,12 @@ pub async fn detect_package_managers(config: &Config) -> Result<Vec<DetectedMana
                 name: name.clone(),
                 config: manager_config.clone(),
                 status: ManagerStatus::Pending,
+                logs: String::new(),
             });
         }
     }
+
+    detected.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(detected)
 }

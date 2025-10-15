@@ -16,7 +16,8 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,7 +91,7 @@ pub async fn run_tui(
                 }
                 Err(join_error) => {
                     // Log join errors but continue - individual manager failures are handled in the workflow
-                    eprintln!("Task join error: {}", join_error);
+                    eprintln!("Task join error: {join_error}");
                     break;
                 }
             }
@@ -99,26 +100,34 @@ pub async fn run_tui(
         // Check if all managers are done
         let all_done = if selective {
             // In selective mode, only check started workflows
-            shared_managers
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| started_workflows[*i])
-                .all(|(_, m)| {
-                    let manager = m.lock().unwrap();
-                    matches!(
+            let mut all_complete = true;
+            for (i, m) in shared_managers.iter().enumerate() {
+                if started_workflows[i] {
+                    let manager = m.lock().await;
+                    if !matches!(
                         manager.status,
-                        ManagerStatus::Success(_) | ManagerStatus::Failed(_)
-                    )
-                })
+                        ManagerStatus::Success | ManagerStatus::Failed(_)
+                    ) {
+                        all_complete = false;
+                        break;
+                    }
+                }
+            }
+            all_complete
         } else {
             // In non-selective mode, check all managers
-            shared_managers.iter().all(|m| {
-                let manager = m.lock().unwrap();
-                matches!(
+            let mut all_complete = true;
+            for m in shared_managers.iter() {
+                let manager = m.lock().await;
+                if !matches!(
                     manager.status,
-                    ManagerStatus::Success(_) | ManagerStatus::Failed(_)
-                )
-            })
+                    ManagerStatus::Success | ManagerStatus::Failed(_)
+                ) {
+                    all_complete = false;
+                    break;
+                }
+            }
+            all_complete
         };
 
         // Set completion time when all done for the first time
@@ -133,10 +142,19 @@ pub async fn run_tui(
             false
         };
 
+        // Clone manager data for rendering to avoid blocking in draw
+        let managers_snapshot: Vec<DetectedManager> = {
+            let mut snapshot = Vec::new();
+            for m in shared_managers.iter() {
+                snapshot.push(m.lock().await.clone());
+            }
+            snapshot
+        };
+
         terminal.draw(|f| {
             ui(
                 f,
-                &shared_managers,
+                &managers_snapshot,
                 &mut list_state,
                 &app_state,
                 &logs_scroll_states,
@@ -247,10 +265,10 @@ pub async fn run_tui(
 
     // Only show summary if user didn't manually quit
     if !user_quit {
-        let final_managers: Vec<DetectedManager> = shared_managers
-            .iter()
-            .map(|m| m.lock().unwrap().clone())
-            .collect();
+        let mut final_managers = Vec::new();
+        for m in shared_managers.iter() {
+            final_managers.push(m.lock().await.clone());
+        }
 
         print_summary(&final_managers);
     }
@@ -260,7 +278,7 @@ pub async fn run_tui(
 
 fn ui(
     f: &mut Frame,
-    shared_managers: &[Arc<Mutex<DetectedManager>>],
+    managers_snapshot: &[DetectedManager],
     list_state: &mut ListState,
     app_state: &AppState,
     logs_scroll_states: &[LogsViewState],
@@ -271,23 +289,21 @@ fn ui(
         AppState::ManagerList => {
             render_manager_list(
                 f,
-                shared_managers,
+                managers_snapshot,
                 list_state,
                 selective,
                 show_completion_message,
             );
         }
         AppState::DetailView(manager_index) => {
-            if let Some(manager_ref) = shared_managers.get(*manager_index) {
-                let manager = manager_ref.lock().unwrap();
-                render_detail_view(f, &manager);
+            if let Some(manager) = managers_snapshot.get(*manager_index) {
+                render_detail_view(f, manager);
             }
         }
         AppState::LogsView(manager_index) => {
-            if let Some(manager_ref) = shared_managers.get(*manager_index) {
+            if let Some(manager) = managers_snapshot.get(*manager_index) {
                 if let Some(scroll_state) = logs_scroll_states.get(*manager_index) {
-                    let manager = manager_ref.lock().unwrap();
-                    render_logs_view(f, &manager, scroll_state);
+                    render_logs_view(f, manager, scroll_state);
                 }
             }
         }
@@ -296,7 +312,7 @@ fn ui(
 
 fn render_manager_list(
     f: &mut Frame,
-    shared_managers: &[Arc<Mutex<DetectedManager>>],
+    managers_snapshot: &[DetectedManager],
     list_state: &mut ListState,
     selective: bool,
     show_completion_message: bool,
@@ -311,21 +327,19 @@ fn render_manager_list(
         .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
         .split(area);
 
-    let items: Vec<ListItem> = shared_managers
+    let items: Vec<ListItem> = managers_snapshot
         .iter()
-        .map(|manager_ref| {
-            let manager = manager_ref.lock().unwrap();
-
+        .map(|manager| {
             let status_style = match manager.status {
-                ManagerStatus::Success(_) => Style::default().fg(Color::Green),
+                ManagerStatus::Success => Style::default().fg(Color::Green),
                 ManagerStatus::Failed(_) => Style::default().fg(Color::Red),
                 _ => Style::default().fg(Color::Yellow),
             };
 
             let status_text = match &manager.status {
                 ManagerStatus::Pending => "Pending".to_string(),
-                ManagerStatus::Running(operation, _) => format!("{}...", operation),
-                ManagerStatus::Success(_) => "✓ Complete".to_string(),
+                ManagerStatus::Running(operation) => format!("{operation}..."),
+                ManagerStatus::Success => "✓ Complete".to_string(),
                 ManagerStatus::Failed(_err) => "✗ Failed".to_string(),
             };
 
@@ -405,18 +419,18 @@ fn render_detail_view(f: &mut Frame, manager: &DetectedManager) {
 
     // Status and logs
     let status_color = match manager.status {
-        ManagerStatus::Success(_) => Color::Green,
+        ManagerStatus::Success => Color::Green,
         ManagerStatus::Failed(_) => Color::Red,
         _ => Color::Yellow,
     };
 
     let status_text = match &manager.status {
         ManagerStatus::Pending => "Status: Pending".to_string(),
-        ManagerStatus::Running(operation, _logs) => {
-            format!("Status: {}...", operation)
+        ManagerStatus::Running(operation) => {
+            format!("Status: {operation}...")
         }
-        ManagerStatus::Success(_) => "Status: ✓ All operations completed successfully".to_string(),
-        ManagerStatus::Failed(err) => format!("Status: ✗ Failed - {}", err),
+        ManagerStatus::Success => "Status: ✓ All operations completed successfully".to_string(),
+        ManagerStatus::Failed(err) => format!("Status: ✗ Failed - {err}"),
     };
 
     let status_block = Paragraph::new(Text::from(status_text))
@@ -461,27 +475,21 @@ fn render_logs_view(f: &mut Frame, manager: &DetectedManager, scroll_state: &Log
     f.render_widget(title_block, chunks[0]);
 
     // Raw logs content - show actual package manager output
-    let logs_text = match &manager.status {
-        ManagerStatus::Running(_operation, logs) => {
-            if logs.is_empty() {
-                "No output yet...".to_string()
-            } else {
-                logs.clone()
-            }
-        }
-        ManagerStatus::Success(logs) => {
-            if logs.is_empty() {
+    let logs_text = if manager.logs.is_empty() {
+        match &manager.status {
+            ManagerStatus::Pending => "Process not started yet...".to_string(),
+            ManagerStatus::Running(_) => "No output yet...".to_string(),
+            ManagerStatus::Success => {
                 "Command completed successfully - no output captured".to_string()
-            } else {
-                logs.clone()
             }
+            ManagerStatus::Failed(err) => err.clone(),
         }
-        ManagerStatus::Failed(err) => err.clone(),
-        ManagerStatus::Pending => "Process not started yet...".to_string(),
+    } else {
+        manager.logs.clone()
     };
 
     let status_color = match manager.status {
-        ManagerStatus::Success(_) => Color::Green,
+        ManagerStatus::Success => Color::Green,
         ManagerStatus::Failed(_) => Color::Red,
         _ => Color::Yellow,
     };
@@ -511,7 +519,7 @@ fn render_logs_view(f: &mut Frame, manager: &DetectedManager, scroll_state: &Log
         String::new()
     };
 
-    let help_text = Paragraph::new(format!("Back: Esc/h/← | Quit: q{}", scroll_indicator))
+    let help_text = Paragraph::new(format!("Back: Esc/h/← | Quit: q{scroll_indicator}"))
         .block(Block::default().borders(Borders::ALL).title("Help"))
         .style(Style::default().fg(Color::Cyan));
 
@@ -522,7 +530,7 @@ fn print_summary(managers: &[DetectedManager]) {
     let total = managers.len();
     let successful = managers
         .iter()
-        .filter(|m| matches!(m.status, ManagerStatus::Success(_)))
+        .filter(|m| matches!(m.status, ManagerStatus::Success))
         .count();
     let failed = managers
         .iter()
@@ -535,7 +543,7 @@ fn print_summary(managers: &[DetectedManager]) {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     println!("\nOverall Results:");
-    println!("  Total Managers:    {}", total);
+    println!("  Total Managers:    {total}");
     println!(
         "  ✓ Successful:      {} ({:.1}%)",
         successful,
@@ -558,12 +566,12 @@ fn print_summary(managers: &[DetectedManager]) {
     println!("\nDetailed Results:");
     for manager in managers {
         match &manager.status {
-            ManagerStatus::Success(_) => {
+            ManagerStatus::Success => {
                 println!("  ✓ {:<20} Success", manager.name);
             }
             ManagerStatus::Failed(err) => {
                 println!("  ✗ {:<20} Failed", manager.name);
-                println!("    └─ Error: {}", err);
+                println!("    └─ Error: {err}");
             }
             _ => {
                 println!("  ? {:<20} Incomplete", manager.name);

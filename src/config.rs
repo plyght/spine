@@ -6,6 +6,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     pub managers: HashMap<String, ManagerConfig>,
+    #[serde(default)]
+    pub auto_update: AutoUpdateConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -17,6 +19,55 @@ pub struct ManagerConfig {
     pub upgrade_all: String,
     pub cleanup: Option<String>,
     pub requires_sudo: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AutoUpdateConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_schedule")]
+    pub schedule: String,
+    #[serde(default = "default_time")]
+    pub time: String,
+    #[serde(default = "default_day")]
+    pub day: String,
+    #[serde(default = "default_notify")]
+    pub notify: bool,
+    #[serde(default = "default_no_tui")]
+    pub no_tui: bool,
+}
+
+impl Default for AutoUpdateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            schedule: default_schedule(),
+            time: default_time(),
+            day: default_day(),
+            notify: default_notify(),
+            no_tui: default_no_tui(),
+        }
+    }
+}
+
+fn default_schedule() -> String {
+    "daily".to_string()
+}
+
+fn default_time() -> String {
+    "18:00".to_string()
+}
+
+fn default_day() -> String {
+    "monday".to_string()
+}
+
+fn default_notify() -> bool {
+    true
+}
+
+fn default_no_tui() -> bool {
+    true
 }
 
 fn get_config_paths() -> Vec<PathBuf> {
