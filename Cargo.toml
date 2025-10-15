@@ -1,6 +1,6 @@
 [package]
 name = "spine-pkgman"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 description = "The backbone of your package management ecosystem. Automatically detects and updates all installed package managers in parallel across *nix systems."
 license = "MIT"
