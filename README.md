@@ -1,6 +1,9 @@
 <div align='center'>
     <br/>
     <br/>
+    <img src="https://github.com/user-attachments/assets/cc330a78-001a-42af-a778-ef4d69599407" alt="19a97d4a6a32afcd37b173d3d1e3ad02_upscayl_4x_upscayl-standard-4x" width="300"/>
+    <br/>
+    <br/>
     <h3>Spine</h3>
     <p>Automatically detects and updates all installed package managers in parallel across *nix systems</p>
     <br/>
