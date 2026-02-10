@@ -1,14 +1,13 @@
-# Spine
-
-<div align="center">
-  <img src="https://github.com/user-attachments/assets/cc330a78-001a-42af-a778-ef4d69599407" alt="19a97d4a6a32afcd37b173d3d1e3ad02_upscayl_4x_upscayl-standard-4x" width="300"/>
+<div align='center'>
+    <br/>
+    <br/>
+    <h3>Spine</h3>
+    <p>Automatically detects and updates all installed package managers in parallel across *nix systems</p>
+    <br/>
+    <br/>
 </div>
 
-The backbone of your package management ecosystem, Spine, Automatically detects and updates all installed package managers in parallel across \*nix systems.
-
-## Overview
-
-Spine serves as the central support structure that connects and coordinates all your package managers. Just as the spine supports the entire body, Spine supports all package managers by discovering them on your system and running their update workflows simultaneously with a clean TUI interface.
+The backbone of your package management ecosystem. Just as the spine supports the entire body, Spine supports all package managers by discovering them on your system and running their update workflows simultaneously with a clean TUI interface.
 
 ## Features
 
@@ -19,7 +18,7 @@ Spine serves as the central support structure that connects and coordinates all 
 - **Smart Sudo Handling**: Automatically handles privilege requirements per manager
 - **Configurable**: Extensible via TOML configuration
 
-## Installation
+## Install
 
 ```bash
 # From source
