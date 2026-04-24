@@ -61,6 +61,7 @@ pub async fn run_tui(
 
     // Track which managers have started their workflows
     let mut started_workflows: Vec<bool> = vec![false; shared_managers.len()];
+    let mut selected_workflows: Vec<bool> = vec![!selective; shared_managers.len()];
 
     // Track whether user manually quit to avoid showing summary
     #[allow(unused_assignments)]
@@ -157,9 +158,12 @@ pub async fn run_tui(
                 &managers_snapshot,
                 &mut list_state,
                 &app_state,
-                &logs_scroll_states,
-                selective,
-                all_done && show_completion_message,
+                UiOptions {
+                    logs_scroll_states: &logs_scroll_states,
+                    selected_workflows: &selected_workflows,
+                    selective,
+                    show_completion_message: all_done && show_completion_message,
+                },
             )
         })?;
 
@@ -170,7 +174,7 @@ pub async fn run_tui(
                     match (&app_state, key.code) {
                         // Global quit commands
                         (_, KeyCode::Char('q')) => {
-                            user_quit = true;
+                            user_quit = !all_done;
                             break;
                         }
                         (AppState::DetailView(_) | AppState::LogsView(_), KeyCode::Esc) => {
@@ -195,13 +199,19 @@ pub async fn run_tui(
                         // Selective mode: start workflow for selected manager
                         (AppState::ManagerList, KeyCode::Char(' ')) if selective => {
                             if selected < shared_managers.len() && !started_workflows[selected] {
-                                let manager_ref = shared_managers[selected].clone();
-                                let index = selected;
-                                started_workflows[selected] = true;
-                                join_set.spawn(async move {
-                                    let _ = execute_manager_workflow(manager_ref).await;
-                                    index
-                                });
+                                selected_workflows[selected] = !selected_workflows[selected];
+                            }
+                        }
+                        (AppState::ManagerList, KeyCode::Char('r')) if selective => {
+                            for (i, manager_ref) in shared_managers.iter().enumerate() {
+                                if selected_workflows[i] && !started_workflows[i] {
+                                    let manager_ref = manager_ref.clone();
+                                    started_workflows[i] = true;
+                                    join_set.spawn(async move {
+                                        let _ = execute_manager_workflow(manager_ref).await;
+                                        i
+                                    });
+                                }
                             }
                         }
                         // Detail view navigation
@@ -276,14 +286,19 @@ pub async fn run_tui(
     Ok(())
 }
 
+struct UiOptions<'a> {
+    logs_scroll_states: &'a [LogsViewState],
+    selected_workflows: &'a [bool],
+    selective: bool,
+    show_completion_message: bool,
+}
+
 fn ui(
     f: &mut Frame,
     managers_snapshot: &[DetectedManager],
     list_state: &mut ListState,
     app_state: &AppState,
-    logs_scroll_states: &[LogsViewState],
-    selective: bool,
-    show_completion_message: bool,
+    options: UiOptions<'_>,
 ) {
     match app_state {
         AppState::ManagerList => {
@@ -291,8 +306,9 @@ fn ui(
                 f,
                 managers_snapshot,
                 list_state,
-                selective,
-                show_completion_message,
+                options.selected_workflows,
+                options.selective,
+                options.show_completion_message,
             );
         }
         AppState::DetailView(manager_index) => {
@@ -302,7 +318,7 @@ fn ui(
         }
         AppState::LogsView(manager_index) => {
             if let Some(manager) = managers_snapshot.get(*manager_index) {
-                if let Some(scroll_state) = logs_scroll_states.get(*manager_index) {
+                if let Some(scroll_state) = options.logs_scroll_states.get(*manager_index) {
                     render_logs_view(f, manager, scroll_state);
                 }
             }
@@ -314,6 +330,7 @@ fn render_manager_list(
     f: &mut Frame,
     managers_snapshot: &[DetectedManager],
     list_state: &mut ListState,
+    selected_workflows: &[bool],
     selective: bool,
     show_completion_message: bool,
 ) {
@@ -329,7 +346,8 @@ fn render_manager_list(
 
     let items: Vec<ListItem> = managers_snapshot
         .iter()
-        .map(|manager| {
+        .enumerate()
+        .map(|(index, manager)| {
             let status_style = match manager.status {
                 ManagerStatus::Success => Style::default().fg(Color::Green),
                 ManagerStatus::Failed(_) => Style::default().fg(Color::Red),
@@ -343,10 +361,33 @@ fn render_manager_list(
                 ManagerStatus::Failed(_err) => "✗ Failed".to_string(),
             };
 
-            ListItem::new(Line::from(vec![
+            let privilege_spans = if manager.config.requires_sudo {
+                vec![
+                    Span::styled("sudo", Style::default().fg(Color::Blue)),
+                    Span::raw("  "),
+                ]
+            } else {
+                vec![Span::raw("      ")]
+            };
+
+            let selection_text = if selective {
+                if selected_workflows.get(index).copied().unwrap_or(false) {
+                    "● "
+                } else {
+                    "○ "
+                }
+            } else {
+                ""
+            };
+
+            let mut spans = vec![
+                Span::styled(selection_text, Style::default().fg(Color::Cyan)),
                 Span::styled(format!("{:<20}", manager.name), Style::default()),
-                Span::styled(status_text, status_style),
-            ]))
+            ];
+            spans.extend(privilege_spans);
+            spans.push(Span::styled(status_text, status_style));
+
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
@@ -366,9 +407,11 @@ fn render_manager_list(
             .block(Block::default().borders(Borders::ALL).title("Status"))
             .style(Style::default().fg(Color::Green))
     } else if selective {
-        Paragraph::new("Navigate: ↑↓/j k | Start: Space | Detail: Enter | Quit: q")
-            .block(Block::default().borders(Borders::ALL).title("Help"))
-            .style(Style::default().fg(Color::Cyan))
+        Paragraph::new(
+            "Navigate: ↑↓/j k | Toggle: Space | Run selected: r | Detail: Enter | Quit: q",
+        )
+        .block(Block::default().borders(Borders::ALL).title("Help"))
+        .style(Style::default().fg(Color::Cyan))
     } else {
         Paragraph::new("Navigate: ↑↓/j k | Detail: Enter | Quit: q")
             .block(Block::default().borders(Borders::ALL).title("Help"))
@@ -388,7 +431,7 @@ fn render_detail_view(f: &mut Frame, manager: &DetectedManager) {
         .direction(Direction::Vertical)
         .constraints(
             [
-                Constraint::Length(7),
+                Constraint::Length(8),
                 Constraint::Min(0),
                 Constraint::Length(3),
             ]
@@ -398,8 +441,9 @@ fn render_detail_view(f: &mut Frame, manager: &DetectedManager) {
 
     // Manager info block
     let info_text = format!(
-        "Name: {}\nCheck Command: {}\nRefresh: {}\nSelf-Update: {}\nUpgrade: {}\nCleanup: {}",
+        "Name: {}\nRequires Sudo: {}\nCheck Command: {}\nRefresh: {}\nSelf-Update: {}\nUpgrade: {}\nCleanup: {}",
         manager.config.name,
+        if manager.config.requires_sudo { "Yes" } else { "No" },
         manager.config.check_command,
         manager.config.refresh.as_deref().unwrap_or("N/A"),
         manager.config.self_update.as_deref().unwrap_or("N/A"),
@@ -538,55 +582,48 @@ fn print_summary(managers: &[DetectedManager]) {
         .count();
     let incomplete = total - successful - failed;
 
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("                           SPINE UPGRADE SUMMARY");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-
-    println!("\nOverall Results:");
-    println!("  Total Managers:    {total}");
+    println!();
+    println!("\x1b[1mspine summary\x1b[0m");
     println!(
-        "  ✓ Successful:      {} ({:.1}%)",
+        "  \x1b[2m·\x1b[0m {} total  \x1b[32m✓\x1b[0m {} passed  \x1b[31m✗\x1b[0m {} failed{}",
+        total,
         successful,
-        (successful as f32 / total as f32) * 100.0
-    );
-    println!(
-        "  ✗ Failed:          {} ({:.1}%)",
         failed,
-        (failed as f32 / total as f32) * 100.0
+        if incomplete > 0 {
+            format!("  \x1b[33m?\x1b[0m {} incomplete", incomplete)
+        } else {
+            String::new()
+        }
     );
+    println!();
 
-    if incomplete > 0 {
-        println!(
-            "  ? Incomplete:      {} ({:.1}%)",
-            incomplete,
-            (incomplete as f32 / total as f32) * 100.0
-        );
-    }
-
-    println!("\nDetailed Results:");
     for manager in managers {
         match &manager.status {
             ManagerStatus::Success => {
-                println!("  ✓ {:<20} Success", manager.name);
+                println!(
+                    "  [\x1b[32m ok \x1b[0m] {:<18} \x1b[2mcomplete\x1b[0m",
+                    manager.name
+                );
             }
             ManagerStatus::Failed(err) => {
-                println!("  ✗ {:<20} Failed", manager.name);
-                println!("    └─ Error: {err}");
+                let summary = err.lines().next().unwrap_or("failed");
+                println!("  [\x1b[31mfail\x1b[0m] {:<18} {}", manager.name, summary);
             }
             _ => {
-                println!("  ? {:<20} Incomplete", manager.name);
+                println!(
+                    "  [\x1b[33mskip\x1b[0m] {:<18} \x1b[2mincomplete\x1b[0m",
+                    manager.name
+                );
             }
         }
     }
 
+    println!();
     if failed > 0 {
-        println!("\n⚠️  Some package managers failed to upgrade completely.");
-        println!("   Check the error details above and consider running 'spn upgrade' again.");
-        println!("   You may also need to run the failed managers manually with sudo privileges.");
+        println!(
+            "\x1b[33mhint:\x1b[0m open a manager in the TUI for full logs, or rerun with spn cli"
+        );
     } else if successful > 0 {
-        println!("\n🎉 All package managers upgraded successfully!");
-        println!("   Your system is now up to date.");
+        println!("\x1b[32mresult:\x1b[0m all package managers completed");
     }
-
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 }

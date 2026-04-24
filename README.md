@@ -37,16 +37,31 @@ cargo install spine-pkgman
 ## Usage
 
 ```bash
+# Open the TUI and upgrade all package managers
+spn
+
+# Run without the TUI
+spn cli
+spn --no-tui
+
+# Preview detected managers and commands without running anything
+spn --dry-run
+
+# Check configuration, detection, sudo, and terminal readiness
+spn doctor
+
 # List detected package managers
 spn list
 
-# Upgrade all package managers
+# Backward-compatible explicit upgrade command
 spn upgrade
 ```
 
 The TUI interface shows real-time status: Pending → Refreshing → Self-updating → Upgrading → Cleaning → Complete
 
-Navigate with ↑↓/j/k, press Enter for details, 'q' to quit.
+Managers that require administrator privileges are marked with a `sudo` badge. Spine asks for sudo once before opening the TUI when any detected manager needs it, then keeps that sudo session alive during long upgrade runs.
+
+Navigate with ↑↓/j/k, press Enter for details, 'q' to quit. In selective mode, press Space to toggle managers and `r` to run the selected set.
 
 ## Configuration
 
@@ -62,7 +77,7 @@ cleanup = "brew cleanup"
 requires_sudo = false
 ```
 
-Configuration is searched in: current directory → binary directory → `/etc/spine/` → `/usr/local/etc/spine/`
+Configuration is searched in: platform config directory (`~/.config/spine/backbone.toml` on many Linux systems, `~/Library/Application Support/spine/backbone.toml` on macOS) → current directory → home (`~/.spine/backbone.toml`) → binary directory → `/etc/spine/backbone.toml` → `/usr/local/etc/spine/backbone.toml`. Use `spn list` or `spn doctor` to see the active config path.
 
 ## Architecture
 

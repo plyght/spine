@@ -2,9 +2,12 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio::task::JoinSet;
 
 use crate::detect::{DetectedManager, ManagerStatus};
-use crate::execute::execute_manager_workflow_simple;
+use crate::execute::{execute_manager_workflow, execute_manager_workflow_simple};
 
 mod config;
 mod detect;
@@ -16,31 +19,42 @@ mod tui;
 #[command(name = "spn")]
 #[command(about = "A meta package manager for Unix-like systems")]
 struct Cli {
+    #[arg(
+        short,
+        long,
+        global = true,
+        help = "Selective mode - wait for user to select which managers to update"
+    )]
+    selective: bool,
+    #[arg(
+        short = 'n',
+        long = "no-tui",
+        global = true,
+        help = "Non-TUI mode - use spinners instead of interactive interface"
+    )]
+    no_tui: bool,
+    #[arg(long, global = true, help = "Send notification when upgrade completes")]
+    notify: bool,
+    #[arg(
+        long,
+        global = true,
+        help = "Preview detected managers and commands without running anything"
+    )]
+    dry_run: bool,
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
     #[command(about = "Upgrade all package managers")]
-    Upgrade {
-        #[arg(
-            short,
-            long,
-            help = "Selective mode - wait for user to select which managers to update"
-        )]
-        selective: bool,
-        #[arg(
-            short = 'n',
-            long = "no-tui",
-            help = "Non-TUI mode - use spinners instead of interactive interface"
-        )]
-        no_tui: bool,
-        #[arg(long, help = "Send notification when upgrade completes")]
-        notify: bool,
-    },
+    Upgrade,
+    #[command(about = "Upgrade all package managers without the TUI")]
+    Cli,
     #[command(about = "List detected package managers")]
     List,
+    #[command(about = "Check Spine configuration, detection, sudo, and terminal readiness")]
+    Doctor,
     #[command(about = "Enable or disable automatic background updates")]
     Auto {
         #[arg(long, help = "Enable automatic updates")]
@@ -57,21 +71,23 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Upgrade {
-            selective,
-            no_tui,
-            notify,
-        } => {
-            upgrade(selective, no_tui, notify).await?;
+        Some(Commands::Upgrade) | None => {
+            upgrade(cli.selective, cli.no_tui, cli.notify, cli.dry_run).await?;
         }
-        Commands::List => {
+        Some(Commands::Cli) => {
+            upgrade(cli.selective, true, cli.notify, cli.dry_run).await?;
+        }
+        Some(Commands::List) => {
             list_managers().await?;
         }
-        Commands::Auto {
+        Some(Commands::Doctor) => {
+            doctor().await?;
+        }
+        Some(Commands::Auto {
             enable,
             disable,
             status,
-        } => {
+        }) => {
             manage_auto_update(enable, disable, status).await?;
         }
     }
@@ -80,7 +96,7 @@ async fn main() -> Result<()> {
 }
 
 async fn list_managers() -> Result<()> {
-    let config = match config::load_config().await {
+    let (config, config_path) = match config::load_config_with_path().await {
         Ok(config) => config,
         Err(e) => {
             eprintln!("Error loading configuration: {e}");
@@ -111,6 +127,7 @@ async fn list_managers() -> Result<()> {
         return Ok(());
     }
 
+    println!("Config: {}", config_path.display());
     println!("Detected {} package manager(s):", managers.len());
     for manager in &managers {
         println!("  ✓ {} ({})", manager.name, manager.config.name);
@@ -122,9 +139,14 @@ async fn list_managers() -> Result<()> {
     Ok(())
 }
 
-async fn upgrade(selective: bool, no_tui: bool, notify_on_complete: bool) -> Result<()> {
+async fn upgrade(
+    selective: bool,
+    no_tui: bool,
+    notify_on_complete: bool,
+    dry_run: bool,
+) -> Result<()> {
     // Load configuration with error handling
-    let config = match config::load_config().await {
+    let (config, config_path) = match config::load_config_with_path().await {
         Ok(config) => config,
         Err(e) => {
             eprintln!("Error loading configuration: {e}");
@@ -132,19 +154,6 @@ async fn upgrade(selective: bool, no_tui: bool, notify_on_complete: bool) -> Res
             std::process::exit(1);
         }
     };
-
-    // Check for sudo availability if any managers require it
-    let requires_sudo = config.managers.values().any(|m| m.requires_sudo);
-    if requires_sudo {
-        match execute::check_sudo_availability().await {
-            true => {}
-            false => {
-                eprintln!("Warning: Some package managers require sudo access.");
-                eprintln!("Please ensure you have the necessary privileges or run with sudo.");
-                eprintln!("Continuing anyway - some operations may fail...\n");
-            }
-        }
-    }
 
     // Detect available package managers
     let managers = match detect::detect_package_managers(&config).await {
@@ -169,17 +178,35 @@ async fn upgrade(selective: bool, no_tui: bool, notify_on_complete: bool) -> Res
         return Ok(());
     }
 
+    println!("{}", bold("spine"));
+    println!("  {} {}", dim("config"), config_path.display());
     println!(
-        "Detected {} package manager(s): {}",
+        "  {} {} managers  {}",
+        dim("found"),
         managers.len(),
-        managers
+        dim(managers
             .iter()
             .map(|m| &m.name)
             .cloned()
             .collect::<Vec<_>>()
-            .join(", ")
+            .join(", "))
     );
-    println!("Starting upgrade process...\n");
+
+    if dry_run {
+        print_dry_run(&managers);
+        return Ok(());
+    }
+
+    // Check for sudo availability if any managers require it
+    let needs_sudo = managers.iter().any(|m| m.config.requires_sudo);
+    let sudo_keepalive = if needs_sudo {
+        execute::prepare_sudo_session().await?;
+        Some(execute::spawn_sudo_keepalive())
+    } else {
+        None
+    };
+
+    println!("  {}\n", dim("starting upgrades"));
 
     // Choose between TUI and non-TUI workflow
     let result = if no_tui {
@@ -188,9 +215,13 @@ async fn upgrade(selective: bool, no_tui: bool, notify_on_complete: bool) -> Res
         tui::run_tui(managers, config, selective).await
     };
 
+    if let Some(running) = sudo_keepalive {
+        execute::stop_sudo_keepalive(running);
+    }
+
     match result {
         Ok(()) => {
-            println!("Upgrade process completed.");
+            println!("{}", dim("upgrade process completed"));
             if notify_on_complete {
                 let _ = notify::send_notification(
                     "Spine Update Complete",
@@ -208,6 +239,144 @@ async fn upgrade(selective: bool, no_tui: bool, notify_on_complete: bool) -> Res
             }
             std::process::exit(1);
         }
+    }
+
+    Ok(())
+}
+
+fn summarize_error(error: &str) -> String {
+    let title = error.lines().next().unwrap_or("failed").trim();
+    let tail = error
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && trimmed != "Logs:"
+                && !trimmed.starts_with("===")
+                && !trimmed.starts_with('✓')
+        })
+        .rev()
+        .take(3)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|line| line.trim().strip_prefix("STDERR: ").unwrap_or(line.trim()))
+        .collect::<Vec<_>>();
+
+    if tail.is_empty() {
+        title.to_string()
+    } else {
+        format!("{} — {}", title, tail.join(" / "))
+    }
+}
+
+fn use_color() -> bool {
+    std::io::IsTerminal::is_terminal(&io::stdout())
+}
+
+fn paint(text: impl std::fmt::Display, code: &str) -> String {
+    if use_color() {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_string()
+    }
+}
+
+fn dim(text: impl std::fmt::Display) -> String {
+    paint(text, "2")
+}
+
+fn green(text: impl std::fmt::Display) -> String {
+    paint(text, "32")
+}
+
+fn red(text: impl std::fmt::Display) -> String {
+    paint(text, "31")
+}
+
+fn yellow(text: impl std::fmt::Display) -> String {
+    paint(text, "33")
+}
+
+fn bold(text: impl std::fmt::Display) -> String {
+    paint(text, "1")
+}
+
+fn print_dry_run(managers: &[DetectedManager]) {
+    println!("\nDry run: no commands will be executed.\n");
+    for manager in managers {
+        println!("{} ({})", manager.name, manager.config.name);
+        println!("  Requires sudo: {}", manager.config.requires_sudo);
+        if let Some(refresh) = &manager.config.refresh {
+            println!("  Refresh:       {}", refresh);
+        }
+        if let Some(self_update) = &manager.config.self_update {
+            println!("  Self-update:   {}", self_update);
+        }
+        println!("  Upgrade:       {}", manager.config.upgrade_all);
+        if let Some(cleanup) = &manager.config.cleanup {
+            println!("  Cleanup:       {}", cleanup);
+        }
+        println!();
+    }
+}
+
+async fn doctor() -> Result<()> {
+    println!("Spine Doctor\n");
+
+    let config_paths = config::config_paths();
+    println!("Config search order:");
+    for path in &config_paths {
+        let marker = if path.exists() { "✓" } else { " " };
+        println!("  {marker} {}", path.display());
+    }
+
+    let (config, config_path) = match config::load_config_with_path().await {
+        Ok(config) => config,
+        Err(e) => {
+            println!("\n✗ Configuration failed: {e}");
+            return Ok(());
+        }
+    };
+
+    println!("\nActive config: {}", config_path.display());
+    println!("Configured managers: {}", config.managers.len());
+
+    let managers = match detect::detect_package_managers(&config).await {
+        Ok(managers) => managers,
+        Err(e) => {
+            println!("✗ Detection failed: {e}");
+            return Ok(());
+        }
+    };
+
+    println!("Detected managers: {}", managers.len());
+    for manager in &managers {
+        let sudo = if manager.config.requires_sudo {
+            " sudo"
+        } else {
+            ""
+        };
+        println!("  ✓ {}{}", manager.name, sudo);
+    }
+
+    let needs_sudo = managers.iter().any(|m| m.config.requires_sudo);
+    if needs_sudo {
+        if which::which("sudo").is_err() {
+            println!("✗ sudo required by detected managers but sudo is not installed");
+        } else if execute::check_sudo_availability().await {
+            println!("✓ sudo is available without prompting");
+        } else {
+            println!("! sudo is installed but will prompt before upgrades");
+        }
+    } else {
+        println!("✓ No detected managers require sudo");
+    }
+
+    if std::io::IsTerminal::is_terminal(&io::stdout()) {
+        println!("✓ stdout is a terminal");
+    } else {
+        println!("! stdout is not a terminal; use spn cli or spn --no-tui");
     }
 
     Ok(())
@@ -232,9 +401,42 @@ async fn run_spinner_upgrade(mut managers: Vec<DetectedManager>, selective: bool
             i += 1;
         }
     } else {
-        // Run all managers sequentially
-        for manager in managers.iter_mut() {
-            run_manager_with_spinner(manager).await?;
+        let shared_managers: Vec<Arc<Mutex<DetectedManager>>> = managers
+            .into_iter()
+            .map(|m| Arc::new(Mutex::new(m)))
+            .collect();
+        let mut join_set = JoinSet::new();
+
+        for manager_ref in &shared_managers {
+            let manager_ref = manager_ref.clone();
+            join_set.spawn(async move {
+                let name = manager_ref.lock().await.name.clone();
+                println!("Starting {name}");
+                let result = execute_manager_workflow(manager_ref.clone()).await;
+                let manager = manager_ref.lock().await;
+                match &manager.status {
+                    ManagerStatus::Success => println!("{} {}", green("✓"), manager.name),
+                    ManagerStatus::Failed(err) => {
+                        println!(
+                            "{} {} {}",
+                            red("✗"),
+                            manager.name,
+                            dim(summarize_error(err))
+                        )
+                    }
+                    _ => println!("{} {}", yellow("?"), manager.name),
+                }
+                result
+            });
+        }
+
+        while let Some(result) = join_set.join_next().await {
+            result??;
+        }
+
+        managers = Vec::new();
+        for manager_ref in shared_managers {
+            managers.push(manager_ref.lock().await.clone());
         }
     }
 
@@ -279,50 +481,65 @@ fn print_spinner_summary(managers: &[DetectedManager]) {
         .iter()
         .filter(|m| matches!(m.status, ManagerStatus::Failed(_)))
         .count();
+    let incomplete = total - successful - failed;
 
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("                           SPINE UPGRADE SUMMARY");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-
-    println!("\nOverall Results:");
-    println!("  Total Managers:    {total}");
+    println!();
+    println!("{}", bold("spine summary"));
     println!(
-        "  ✓ Successful:      {} ({:.1}%)",
+        "  {} {} total  {} {} passed  {} {} failed{}",
+        dim("·"),
+        total,
+        green("✓"),
         successful,
-        (successful as f32 / total as f32) * 100.0
-    );
-    println!(
-        "  ✗ Failed:          {} ({:.1}%)",
+        red("✗"),
         failed,
-        (failed as f32 / total as f32) * 100.0
+        if incomplete > 0 {
+            format!("  {} {} incomplete", yellow("?"), incomplete)
+        } else {
+            String::new()
+        }
     );
+    println!();
 
-    println!("\nDetailed Results:");
     for manager in managers {
         match &manager.status {
             ManagerStatus::Success => {
-                println!("  ✓ {:<20} Success", manager.name);
+                println!(
+                    "  [{}] {:<18} {}",
+                    green(" ok "),
+                    manager.name,
+                    dim("complete")
+                );
             }
             ManagerStatus::Failed(err) => {
-                println!("  ✗ {:<20} Failed", manager.name);
-                println!("    └─ Error: {err}");
+                println!(
+                    "  [{}] {:<18} {}",
+                    red("fail"),
+                    manager.name,
+                    summarize_error(err)
+                );
             }
             _ => {
-                println!("  ? {:<20} Incomplete", manager.name);
+                println!(
+                    "  [{}] {:<18} {}",
+                    yellow("skip"),
+                    manager.name,
+                    dim("incomplete")
+                );
             }
         }
     }
 
+    println!();
     if failed > 0 {
-        println!("\n⚠️  Some package managers failed to upgrade completely.");
-        println!("   Check the error details above and consider running 'spn upgrade' again.");
-        println!("   You may also need to run the failed managers manually with sudo privileges.");
+        println!(
+            "{} {} failed. Open the TUI detail view for full logs, or rerun a manager manually.",
+            yellow("hint:"),
+            failed
+        );
     } else if successful > 0 {
-        println!("\n🎉 All package managers upgraded successfully!");
-        println!("   Your system is now up to date.");
+        println!("{} all package managers completed", green("result:"));
     }
-
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 }
 
 async fn manage_auto_update(enable: bool, disable: bool, status_only: bool) -> Result<()> {

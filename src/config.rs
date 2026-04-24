@@ -133,14 +133,18 @@ async fn create_default_config() -> Result<PathBuf> {
     anyhow::bail!("Unable to create config directory in any standard location");
 }
 
-pub async fn load_config() -> Result<Config> {
+pub fn config_paths() -> Vec<PathBuf> {
+    get_config_paths()
+}
+
+pub async fn load_config_with_path() -> Result<(Config, PathBuf)> {
     let possible_paths = get_config_paths();
 
     for path in &possible_paths {
         if path.exists() {
             let content = tokio::fs::read_to_string(&path).await?;
             let config: Config = toml::from_str(&content)?;
-            return Ok(config);
+            return Ok((config, path.clone()));
         }
     }
 
@@ -153,5 +157,9 @@ pub async fn load_config() -> Result<Config> {
         "Created default configuration at: {}",
         created_path.display()
     );
-    Ok(config)
+    Ok((config, created_path))
+}
+
+pub async fn load_config() -> Result<Config> {
+    Ok(load_config_with_path().await?.0)
 }

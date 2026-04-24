@@ -1,9 +1,12 @@
 use crate::detect::{DetectedManager, ManagerStatus};
 use anyhow::Result;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
@@ -210,82 +213,94 @@ async fn execute_command_with_logs(
         .take()
         .ok_or_else(|| anyhow::anyhow!("Failed to get stderr"))?;
 
-    let mut stdout_reader = BufReader::new(stdout).lines();
-    let mut stderr_reader = BufReader::new(stderr).lines();
+    let shared_logs = Arc::new(Mutex::new(accumulated_logs.clone()));
+    let stdout_task = tokio::spawn(read_output_stream(
+        stdout,
+        None,
+        operation.clone(),
+        manager_ref.clone(),
+        shared_logs.clone(),
+    ));
+    let stderr_task = tokio::spawn(read_output_stream(
+        stderr,
+        Some("STDERR: "),
+        operation,
+        manager_ref.clone(),
+        shared_logs.clone(),
+    ));
 
-    let timeout_future = tokio::time::sleep(timeout);
-    tokio::pin!(timeout_future);
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(e)) => {
+            let mut logs = shared_logs.lock().await;
+            logs.push_str(&format!("ERROR waiting for command: {e}\n"));
+            *accumulated_logs = logs.clone();
+            return Err(anyhow::anyhow!("Error waiting for command: {e}"));
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            let mut logs = shared_logs.lock().await;
+            logs.push_str("\nERROR: Command timed out\n");
+            *accumulated_logs = logs.clone();
+            let mut manager = manager_ref.lock().await;
+            manager.status =
+                ManagerStatus::Failed(format!("Command timed out\n\nLogs:\n{accumulated_logs}"));
+            return Err(anyhow::anyhow!("Command timed out"));
+        }
+    };
 
-    let mut stdout_closed = false;
-    let mut stderr_closed = false;
+    stdout_task.await??;
+    stderr_task.await??;
+
+    let mut logs = shared_logs.lock().await;
+    let success = status.success();
+    if !success {
+        logs.push_str(&format!(
+            "\nCommand exited with code: {}\n",
+            status.code().unwrap_or(-1)
+        ));
+    }
+    *accumulated_logs = logs.clone();
+    Ok(success)
+}
+
+async fn read_output_stream<T>(
+    mut stream: T,
+    prefix: Option<&'static str>,
+    operation: String,
+    manager_ref: Arc<Mutex<DetectedManager>>,
+    shared_logs: Arc<Mutex<String>>,
+) -> Result<()>
+where
+    T: tokio::io::AsyncRead + Unpin,
+{
+    let mut buffer = [0; 4096];
 
     loop {
-        tokio::select! {
-            () = &mut timeout_future => {
-                let _ = child.kill().await;
-                accumulated_logs.push_str("\nERROR: Command timed out\n");
-                let mut manager = manager_ref.lock().await;
-                manager.status = ManagerStatus::Failed(format!("Command timed out\n\nLogs:\n{accumulated_logs}"));
-                return Err(anyhow::anyhow!("Command timed out"));
-            }
-
-            stdout_line = stdout_reader.next_line(), if !stdout_closed => {
-                match stdout_line {
-                    Ok(Some(line)) => {
-                        accumulated_logs.push_str(&line);
-                        accumulated_logs.push('\n');
-
-                        let mut manager = manager_ref.lock().await;
-                        manager.status = ManagerStatus::Running(operation.clone());
-                        manager.logs = accumulated_logs.clone();
-                    }
-                    Ok(None) => {
-                        stdout_closed = true;
-                    }
-                    Err(e) => {
-                        accumulated_logs.push_str(&format!("ERROR reading stdout: {e}\n"));
-                        return Err(anyhow::anyhow!("Error reading stdout: {e}"));
-                    }
-                }
-            }
-
-            stderr_line = stderr_reader.next_line(), if !stderr_closed => {
-                match stderr_line {
-                    Ok(Some(line)) => {
-                        accumulated_logs.push_str("STDERR: ");
-                        accumulated_logs.push_str(&line);
-                        accumulated_logs.push('\n');
-
-                        let mut manager = manager_ref.lock().await;
-                        manager.status = ManagerStatus::Running(operation.clone());
-                        manager.logs = accumulated_logs.clone();
-                    }
-                    Ok(None) => {
-                        stderr_closed = true;
-                    }
-                    Err(e) => {
-                        accumulated_logs.push_str(&format!("ERROR reading stderr: {e}\n"));
-                        return Err(anyhow::anyhow!("Error reading stderr: {e}"));
-                    }
-                }
-            }
-
-            status = child.wait() => {
-                match status {
-                    Ok(exit_status) => {
-                        let success = exit_status.success();
-                        if !success {
-                            accumulated_logs.push_str(&format!("\nCommand exited with code: {}\n", exit_status.code().unwrap_or(-1)));
-                        }
-                        return Ok(success);
-                    }
-                    Err(e) => {
-                        accumulated_logs.push_str(&format!("ERROR waiting for command: {e}\n"));
-                        return Err(anyhow::anyhow!("Error waiting for command: {e}"));
-                    }
-                }
-            }
+        let bytes_read = stream.read(&mut buffer).await?;
+        if bytes_read == 0 {
+            return Ok(());
         }
+
+        let chunk = String::from_utf8_lossy(&buffer[..bytes_read]);
+        let mut logs = shared_logs.lock().await;
+        if let Some(prefix) = prefix {
+            if logs.ends_with('\n') || logs.is_empty() {
+                logs.push_str(prefix);
+            }
+            for (index, part) in chunk.split_inclusive('\n').enumerate() {
+                if index > 0 {
+                    logs.push_str(prefix);
+                }
+                logs.push_str(part);
+            }
+        } else {
+            logs.push_str(&chunk);
+        }
+
+        let mut manager = manager_ref.lock().await;
+        manager.status = ManagerStatus::Running(operation.clone());
+        manager.logs = logs.clone();
     }
 }
 
@@ -300,6 +315,7 @@ fn build_command(command: &str, requires_sudo: bool) -> Result<Command> {
         }
         let mut c = Command::new("sudo");
         c.arg("-n");
+        c.arg("--preserve-env=HOME,PATH,USER,LOGNAME,SHELL,TERM");
         c.arg("sh");
         c.arg("-c");
         c.arg(command);
@@ -334,4 +350,49 @@ pub async fn check_sudo_availability() -> bool {
         Ok(status) => status.success(),
         Err(_) => false,
     }
+}
+
+pub async fn prepare_sudo_session() -> Result<()> {
+    if which::which("sudo").is_err() {
+        anyhow::bail!("sudo is required but not available");
+    }
+
+    if check_sudo_availability().await {
+        return Ok(());
+    }
+
+    println!("  \x1b[2msudo\x1b[0m administrator privileges needed; authenticating once before the TUI\n");
+
+    let status = Command::new("sudo").arg("-v").status().await?;
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("sudo authentication failed");
+    }
+}
+
+pub fn spawn_sudo_keepalive() -> Arc<AtomicBool> {
+    let running = Arc::new(AtomicBool::new(true));
+    let keepalive_running = running.clone();
+
+    tokio::spawn(async move {
+        while keepalive_running.load(Ordering::Relaxed) {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            if !keepalive_running.load(Ordering::Relaxed) {
+                break;
+            }
+            let _ = Command::new("sudo")
+                .args(["-n", "-v"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await;
+        }
+    });
+
+    running
+}
+
+pub fn stop_sudo_keepalive(running: Arc<AtomicBool>) {
+    running.store(false, Ordering::Relaxed);
 }

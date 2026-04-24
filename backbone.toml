@@ -71,7 +71,6 @@ requires_sudo = true
 name = "Nix"
 check_command = "nix --version"
 refresh = "nix-channel --update"
-self_update = "nix upgrade-nix"
 upgrade_all = "nix-env -u"
 cleanup = "nix-collect-garbage -d"
 requires_sudo = false
@@ -127,10 +126,10 @@ requires_sudo = true
 [managers.npm]
 name = "npm"
 check_command = "npm --version"
-refresh = "npm update -g"
-self_update = "npm install -g npm@latest"
-upgrade_all = "npm update -g"
-cleanup = "npm cache clean --force"
+refresh = "root=$(npm root -g) && find \"$root\" -maxdepth 1 -name .DS_Store -delete && npm outdated -g --depth=0 || true"
+self_update = "root=$(npm root -g) && find \"$root\" -maxdepth 1 -name .DS_Store -delete && npm install -g npm@latest"
+upgrade_all = "root=$(npm root -g) && find \"$root\" -maxdepth 1 -name .DS_Store -delete && npm update -g"
+cleanup = "root=$(npm root -g) && find \"$root\" -maxdepth 1 -name .DS_Store -delete && npm cache clean --force"
 requires_sudo = false
 
 [managers.yarn]
@@ -151,18 +150,16 @@ requires_sudo = false
 
 [managers.pip]
 name = "pip"
-check_command = "pip --version"
-refresh = "pip index versions pip"
-self_update = "python -m pip install --upgrade pip"
-upgrade_all = "python -m pip install --upgrade pip setuptools wheel"
+check_command = "python -m pip --version"
+refresh = "python -m pip list --outdated || true"
+upgrade_all = "echo 'pip system/package-wide upgrades are skipped; use uv/pipx/venv-specific upgrades instead'"
 requires_sudo = false
 
 [managers.pip3]
 name = "pip3"
-check_command = "pip3 --version"
-refresh = "pip3 index versions pip"
-self_update = "python3 -m pip install --upgrade pip"
-upgrade_all = "python3 -m pip install --upgrade pip setuptools wheel"
+check_command = "python3 -m pip --version"
+refresh = "python3 -m pip list --outdated || true"
+upgrade_all = "echo 'pip3 system/package-wide upgrades are skipped; use uv/pipx/venv-specific upgrades instead'"
 requires_sudo = false
 
 [managers.rustup]
@@ -176,8 +173,8 @@ requires_sudo = false
 [managers.cargo]
 name = "Cargo"
 check_command = "cargo --version"
-refresh = "cargo search --limit 0"
-upgrade_all = "cargo update"
+refresh = "command -v cargo-install-update >/dev/null 2>&1 && cargo install-update --list || echo 'cargo-update not installed; skipping cargo binary update check'"
+upgrade_all = "command -v cargo-install-update >/dev/null 2>&1 && cargo install-update -a || echo 'cargo-update not installed; skipping cargo binary updates'"
 requires_sudo = false
 
 [managers.composer]
@@ -195,13 +192,6 @@ refresh = "gem outdated"
 self_update = "gem update --system"
 upgrade_all = "gem update"
 cleanup = "gem cleanup"
-requires_sudo = false
-
-[managers.go]
-name = "Go modules"
-check_command = "go version"
-refresh = "go list -u -m all"
-upgrade_all = "go get -u all"
 requires_sudo = false
 
 [managers.conda]

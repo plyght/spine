@@ -2,16 +2,174 @@ name: Release Build
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    branches:
+      - main
+      - master
+    paths:
+      - 'Cargo.toml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to rebuild (e.g. 0.3.0). Skips version check, tag, release creation — only builds and attaches binaries.'
+        required: true
 
 permissions:
   contents: write
 
 jobs:
+  check-version:
+    name: Check for version bump
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
+      prev_tag: ${{ steps.check.outputs.prev_tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if version changed
+        id: check
+        run: |
+          CURRENT_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "Current version: $CURRENT_VERSION"
+
+          git show HEAD^:Cargo.toml > /tmp/old_cargo.toml 2>/dev/null || echo 'version = "0.0.0"' > /tmp/old_cargo.toml
+          PREV_VERSION=$(grep '^version' /tmp/old_cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "Previous version: $PREV_VERSION"
+
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "Previous tag: $PREV_TAG"
+          echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
+
+          if git ls-remote --tags origin | grep -q "refs/tags/v$CURRENT_VERSION"; then
+            echo "Tag v$CURRENT_VERSION already exists, skipping release"
+            echo "should_release=false" >> $GITHUB_OUTPUT
+          elif [ "$CURRENT_VERSION" != "$PREV_VERSION" ]; then
+            echo "Version changed from $PREV_VERSION to $CURRENT_VERSION"
+            echo "should_release=true" >> $GITHUB_OUTPUT
+            echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "Version unchanged, skipping release"
+            echo "should_release=false" >> $GITHUB_OUTPUT
+          fi
+
+  generate-notes:
+    name: Generate AI release notes
+    runs-on: ubuntu-latest
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    outputs:
+      release_notes: ${{ steps.generate.outputs.notes }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes from code diff
+        id: generate
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          PREV_TAG="${{ needs.check-version.outputs.prev_tag }}"
+
+          if [ -n "$PREV_TAG" ]; then
+            echo "Getting diff from $PREV_TAG to HEAD"
+            DIFF=$(git diff "$PREV_TAG"..HEAD -- '*.rs' 'Cargo.toml' 2>/dev/null || echo "No diff available")
+          else
+            echo "No previous tag, getting diff from initial commit"
+            FIRST_COMMIT=$(git rev-list --max-parents=0 HEAD)
+            DIFF=$(git diff "$FIRST_COMMIT"..HEAD -- '*.rs' 'Cargo.toml' 2>/dev/null || echo "No diff available")
+          fi
+
+          DIFF_LENGTH=${#DIFF}
+          if [ $DIFF_LENGTH -gt 80000 ]; then
+            DIFF="${DIFF:0:80000}... [truncated]"
+          fi
+
+          REQUEST=$(jq -n \
+            --arg diff "Generate release notes for version $VERSION of spine (a package-management automation CLI written in Rust that detects and updates installed package managers in parallel across Unix-like systems).\n\nCode diff:\n$DIFF" \
+            '{
+              "model": "gpt-5.2",
+              "messages": [
+                {
+                  "role": "system",
+                  "content": "You generate release notes from code diffs. Rules:\n- No emojis\n- No title/header (release name already shown in GitHub UI)\n- Minimal, concise, yet comprehensive\n- Only include sections with actual changes (omit empty sections entirely)\n- Use markdown ## headers: Features, Fixes, Improvements, Breaking Changes\n- Focus on user-facing changes only, skip internal refactoring\n- If only version bump with no real changes, output exactly: Maintenance release."
+                },
+                {
+                  "role": "user",
+                  "content": $diff
+                }
+              ],
+              "max_completion_tokens": 2000
+            }')
+
+          RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $OPENAI_API_KEY" \
+            -d "$REQUEST")
+
+          NOTES=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
+
+          if [ -z "$NOTES" ]; then
+            echo "API call failed or empty response, using fallback"
+            if [ -n "$PREV_TAG" ]; then
+              NOTES="## What's Changed
+          See the [full changelog](https://github.com/${{ github.repository }}/compare/${PREV_TAG}...v${VERSION}) for details."
+            else
+              NOTES="## Release v${VERSION}
+          Initial release."
+            fi
+          fi
+
+          echo "$NOTES" > /tmp/release_notes.md
+
+          echo "notes<<NOTES_EOF" >> $GITHUB_OUTPUT
+          cat /tmp/release_notes.md >> $GITHUB_OUTPUT
+          echo "NOTES_EOF" >> $GITHUB_OUTPUT
+
+  create-tag:
+    name: Create release tag
+    runs-on: ubuntu-latest
+    needs: [check-version, generate-notes]
+    if: needs.check-version.outputs.should_release == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ needs.check-version.outputs.version }}" -m "Release v${{ needs.check-version.outputs.version }}"
+          git push origin "v${{ needs.check-version.outputs.version }}"
+
+  create-release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    needs: [check-version, generate-notes, create-tag]
+    if: needs.check-version.outputs.should_release == 'true'
+    steps:
+      - name: Create release with AI notes
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check-version.outputs.version }}
+          name: v${{ needs.check-version.outputs.version }}
+          body: ${{ needs.generate-notes.outputs.release_notes }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build:
     name: Build ${{ matrix.platform }} (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
+    needs: [check-version, create-release]
+    if: always() && (needs.check-version.outputs.should_release == 'true' || github.event_name == 'workflow_dispatch')
     strategy:
       fail-fast: false
       matrix:
@@ -23,7 +181,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary_name: spn
             asset_name: spn-linux-x64
-          
+
           # Linux ARM64
           - os: ubuntu-latest
             platform: linux
@@ -31,7 +189,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             binary_name: spn
             asset_name: spn-linux-arm64
-          
+
           # macOS x64
           - os: macos-latest
             platform: macos
@@ -39,7 +197,7 @@ jobs:
             target: x86_64-apple-darwin
             binary_name: spn
             asset_name: spn-macos-x64
-          
+
           # macOS ARM64
           - os: macos-latest
             platform: macos
@@ -63,6 +221,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
+      - name: Configure linker (Linux ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          mkdir -p .cargo
+          echo '[target.aarch64-unknown-linux-gnu]' >> .cargo/config.toml
+          echo 'linker = "aarch64-linux-gnu-gcc"' >> .cargo/config.toml
+
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
@@ -74,6 +239,7 @@ jobs:
       - name: Upload binary to release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.check-version.outputs.version || github.event.inputs.version }}
           files: ${{ matrix.asset_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -81,7 +247,8 @@ jobs:
   publish-crates:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    needs: build
+    needs: [check-version, build]
+    if: always() && (needs.check-version.outputs.should_release == 'true' || github.event_name == 'workflow_dispatch') && !failure()
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
